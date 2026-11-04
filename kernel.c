@@ -1,6 +1,9 @@
-typedef unsigned char  u8;
-typedef unsigned short u16;
-typedef unsigned int   u32;
+typedef unsigned char      u8;
+typedef unsigned short     u16;
+typedef unsigned int       u32;
+typedef unsigned long long u64;
+typedef unsigned long long uintptr_t;
+typedef long long          intptr_t;
 #include "cyrfont.h"
 
 static inline void outb(u16 p, u8 v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
@@ -388,8 +391,8 @@ static void fetch(void) {
         switch (i) {
         case 0: color = th->user; puts("user"); color = th->base; puts("@"); color = th->user; puts("cravgos"); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.4 x86"); break;
-        case 3: kv("Kernel", "cravgos-kernel (32-bit)"); break;
+        case 2: kv("OS", "Cravgos 0.5 x86_64"); break;
+        case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
         case 6: kv("Display", "80x25 text mode"); break;
@@ -609,7 +612,7 @@ static int e1000_send(const u8 *d, int len) {
     if (len > 2040) return -1;
     for (u32 spin = 0; !(t->status & 1); spin++) if (spin > 3000000u) return -1;
     for (int i = 0; i < len; i++) txbuf[tx_cur][i] = d[i];
-    t->lo = (u32)txbuf[tx_cur]; t->hi = 0; t->len = len;
+    t->lo = (u32)(uintptr_t)txbuf[tx_cur]; t->hi = (u32)((uintptr_t)txbuf[tx_cur] >> 32); t->len = len;
     t->cso = 0; t->cmd = 0x0B; t->status = 0; t->css = 0; t->spec = 0;   /* EOP | IFCS | RS */
     tx_cur = (tx_cur + 1) % E1000_TX;
     nw(0x3818, tx_cur);
@@ -646,7 +649,7 @@ found:
     pci_write(b, d, f, 4, pci_read(b, d, f, 4) | 7);          /* I/O, память, bus master */
     u32 bar = pci_read(b, d, f, 0x10) & ~0xFu;
     if (!bar) return 0;
-    nicm = (volatile u32 *)bar;
+    nicm = (volatile u32 *)(uintptr_t)bar;
     nw(0x00D8, 0xFFFFFFFFu);                                    /* IMC: все прерывания выкл */
     nw(0x0000, nr(0) | (1u << 26));                             /* сброс */
     for (u32 spin = 0; (nr(0) & (1u << 26)) && spin < 1000000u; spin++) ;
@@ -668,12 +671,12 @@ found:
     nmac[4] = rah; nmac[5] = rah >> 8;
     nw(0x5400, ral); nw(0x5404, (rah & 0xFFFF) | (1u << 31));
     for (u32 i = 0; i < 128; i++) nw(0x5200 + i * 4, 0);        /* MTA */
-    for (u32 i = 0; i < E1000_RX; i++) { rxr[i].lo = (u32)rxbuf[i]; rxr[i].hi = 0; rxr[i].status = 0; }
-    nw(0x2800, (u32)rxr); nw(0x2804, 0); nw(0x2808, E1000_RX * 16);
+    for (u32 i = 0; i < E1000_RX; i++) { rxr[i].lo = (u32)(uintptr_t)rxbuf[i]; rxr[i].hi = (u32)((uintptr_t)rxbuf[i] >> 32); rxr[i].status = 0; }
+    nw(0x2800, (u32)(uintptr_t)rxr); nw(0x2804, (u32)((uintptr_t)rxr >> 32)); nw(0x2808, E1000_RX * 16);
     nw(0x2810, 0); nw(0x2818, E1000_RX - 1); rx_cur = 0;
     nw(0x0100, (1u << 1) | (1u << 15) | (1u << 26));            /* EN | BAM | SECRC, буфер 2048 */
     for (u32 i = 0; i < E1000_TX; i++) { txr[i].lo = 0; txr[i].hi = 0; txr[i].status = 1; }
-    nw(0x3800, (u32)txr); nw(0x3804, 0); nw(0x3808, E1000_TX * 16);
+    nw(0x3800, (u32)(uintptr_t)txr); nw(0x3804, (u32)((uintptr_t)txr >> 32)); nw(0x3808, E1000_TX * 16);
     nw(0x3810, 0); nw(0x3818, 0); tx_cur = 0;
     nw(0x0400, (1u << 1) | (1u << 3) | (0x0Fu << 4) | (0x40u << 12));
     nw(0x0410, 0x0060200A);
@@ -1573,8 +1576,8 @@ static void fm_draw(void) {
             if (!fsn[e].dir) { h_apnd(t, &n, sizeof t, "   "); apnd_u(t, &n, sizeof t, fsn[e].size); h_apnd(t, &n, sizeof t, " bytes"); }
             put_clip(1, 23, t, 78, th->file);
         } else { char pp[256]; fs_path(pn[fm_act].cwd, pp); put_clip(1, 23, pp, 78, th->file); }
-        int mc = 0, mb = 0;
-        for (int i = 1; i < FS_MAXN; i++) if (fsn[i].used && fm_mark[i]) { mc++; mb += fsn[i].size; }
+        int mc = 0;
+        for (int i = 1; i < FS_MAXN; i++) if (fsn[i].used && fm_mark[i]) mc++;
         if (mc) { char t[40]; int n = 0; t[0] = 0; h_apnd(t, &n, sizeof t, "Marked: "); apnd_u(t, &n, sizeof t, mc); put_str_at(W - 1 - n, 23, t, th->mark); }
     }
     for (int i = 0; i < 10; i++) {
@@ -1930,7 +1933,7 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.4 - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.5 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
     bx_row("         ", "fastfetch free reboot halt crashtest", 78);
@@ -1967,7 +1970,7 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.4", "  -  terminal operating system for x86", 62);
+    bx_row("Cravgos 0.5 (x86_64)", "  -  terminal operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
@@ -1988,7 +1991,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.4  -  a terminal operating system", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.5 (x86_64)  -  64-bit terminal OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2023,7 +2026,7 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.4 - terminal-only x86 OS (mouse, themes, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.5 (x86_64) - terminal-only 64-bit OS (long mode, mouse, themes, http+https)\n");
     /* файлы */
     else if (streq(cmd, "ls")) cmd_ls(args);
     else if (streq(cmd, "pwd")) { char p[256]; fs_path(fs_cwd, p); puts(p); putc('\n'); }
@@ -2127,15 +2130,28 @@ static void fs_boot(void) {
 }
 
 /* ---------- Перехват исключений процессора ---------- */
-extern const u32 isr_table[];
-static u8 idt_tab[256 * 8] __attribute__((aligned(8)));
+struct exc_frame {
+    u64 rax, rbx, rcx, rdx, rbp, rsi, rdi;
+    u64 r8, r9, r10, r11, r12, r13, r14, r15;
+    u64 vec, err;
+    u64 rip, cs_, rflags, rsp, ss;
+};
+extern const u64 isr_table[];
+static u8 idt_tab[256 * 16] __attribute__((aligned(16)));
 static void idt_init(void) {
     for (int i = 0; i < 256; i++) {
-        u32 h = isr_table[i < 32 ? i : 32];
-        u8 *g = idt_tab + i * 8;
-        g[0] = (u8)h; g[1] = (u8)(h >> 8); g[2] = 0x08; g[3] = 0; g[4] = 0; g[5] = 0x8E; g[6] = (u8)(h >> 16); g[7] = (u8)(h >> 24);
+        u64 h = isr_table[i < 32 ? i : 32];
+        u8 *g = idt_tab + i * 16;
+        g[0] = (u8)h; g[1] = (u8)(h >> 8);
+        g[2] = 0x08; g[3] = 0;
+        g[4] = 0;
+        g[5] = 0x8E;
+        g[6] = (u8)(h >> 16); g[7] = (u8)(h >> 24);
+        g[8] = (u8)(h >> 32); g[9] = (u8)(h >> 40);
+        g[10] = (u8)(h >> 48); g[11] = (u8)(h >> 56);
+        g[12] = 0; g[13] = 0; g[14] = 0; g[15] = 0;
     }
-    struct { u16 lim; u32 base; } __attribute__((packed)) d = { sizeof idt_tab - 1, (u32)idt_tab };
+    struct { u16 lim; u64 base; } __attribute__((packed)) d = { sizeof idt_tab - 1, (u64)(uintptr_t)idt_tab };
     __asm__ volatile("lidt %0" : : "m"(d));
 }
 static void put_hex_at(int x, int y, u32 v, int digits, u8 at) {
@@ -2149,29 +2165,38 @@ static const char *exc_name(u32 v) {
     return v < 22 ? n[v] : "Unexpected interrupt";
 }
 void shell_main(void) __attribute__((noreturn, used));
-void exception_handler(u32 *f) __attribute__((used, noreturn));
-void exception_handler(u32 *f) {
+void exception_handler(struct exc_frame *f) __attribute__((used, noreturn));
+void exception_handler(struct exc_frame *f) {
     static int depth;
     if (++depth > 2) for (;;) __asm__ volatile("hlt");
-    u32 vec = f[0], err = f[1], eip = f[2], cs_ = f[3];
+    u64 vec = f->vec, err = f->err, rip = f->rip, cs_ = f->cs_;
     mouse_ui = 0; ms_shown = 0; http_abort = 0; tcp_state = TCP_CLOSED; tls_up = 0; ext = 0; shift = 0; mpi = 0;
-    int x = 6, y = 6, w = 68, h = 12;
+    int x = 4, y = 5, w = 72, h = 14;
     fill_rect(x, y, w, h, 0x4F);
     draw_box(x, y, w, h, 0x4F, 1);
-    put_str_at(x + 3, y + 1, "CRASH CAUGHT - Cravgos stays alive instead of rebooting", 0x4E);
-    put_str_at(x + 3, y + 3, "Exception 0x", 0x4F); put_hex_at(x + 15, y + 3, vec, 2, 0x4F);
-    put_clip(x + 19, y + 3, exc_name(vec), w - 22, 0x4F);
-    put_str_at(x + 3, y + 4, "Error code 0x", 0x4F); put_hex_at(x + 16, y + 4, err, 8, 0x4F);
-    put_str_at(x + 28, y + 4, "EIP 0x", 0x4F); put_hex_at(x + 34, y + 4, eip, 8, 0x4F);
-    put_str_at(x + 46, y + 4, "CS 0x", 0x4F); put_hex_at(x + 51, y + 4, cs_, 4, 0x4F);
-    put_str_at(x + 3, y + 6, "Last command: ", 0x4F); put_clip(x + 17, y + 6, last_cmd, 30, 0x4E);
-    put_str_at(x + 3, y + 8, "Please send these numbers (photo or screenshot) so it can be fixed.", 0x4F);
+    put_str_at(x + 3, y + 1, "CRASH CAUGHT - Cravgos (x86_64) stays alive instead of rebooting", 0x4E);
+    put_str_at(x + 3, y + 3, "Exception 0x", 0x4F); put_hex_at(x + 15, y + 3, (u32)vec, 2, 0x4F);
+    put_clip(x + 19, y + 3, exc_name((u32)vec), w - 22, 0x4F);
+    put_str_at(x + 3, y + 4, "Error 0x", 0x4F); put_hex_at(x + 11, y + 4, (u32)err, 8, 0x4F);
+    put_str_at(x + 22, y + 4, "RIP 0x", 0x4F);
+    put_hex_at(x + 28, y + 4, (u32)(rip >> 32), 8, 0x4F);
+    put_hex_at(x + 36, y + 4, (u32)rip, 8, 0x4F);
+    put_str_at(x + 46, y + 4, "CS 0x", 0x4F); put_hex_at(x + 51, y + 4, (u32)cs_, 4, 0x4F);
+    put_str_at(x + 3, y + 5, "RAX 0x", 0x4F); put_hex_at(x + 9, y + 5, (u32)f->rax, 8, 0x4F);
+    put_str_at(x + 20, y + 5, "RBX 0x", 0x4F); put_hex_at(x + 26, y + 5, (u32)f->rbx, 8, 0x4F);
+    put_str_at(x + 37, y + 5, "RCX 0x", 0x4F); put_hex_at(x + 43, y + 5, (u32)f->rcx, 8, 0x4F);
+    put_str_at(x + 54, y + 5, "RDX 0x", 0x4F); put_hex_at(x + 60, y + 5, (u32)f->rdx, 8, 0x4F);
+    put_str_at(x + 3, y + 6, "RSP 0x", 0x4F); put_hex_at(x + 9, y + 6, (u32)f->rsp, 8, 0x4F);
+    put_str_at(x + 20, y + 6, "RBP 0x", 0x4F); put_hex_at(x + 26, y + 6, (u32)f->rbp, 8, 0x4F);
+    put_str_at(x + 37, y + 6, "RSI 0x", 0x4F); put_hex_at(x + 43, y + 6, (u32)f->rsi, 8, 0x4F);
+    put_str_at(x + 54, y + 6, "RDI 0x", 0x4F); put_hex_at(x + 60, y + 6, (u32)f->rdi, 8, 0x4F);
+    put_str_at(x + 3, y + 8, "Last command: ", 0x4F); put_clip(x + 17, y + 8, last_cmd, 30, 0x4E);
     put_str_at(x + 3, y + 10, "Press any key to return to the shell.", 0x4F);
     for (int i = 0; i < 64; i++) key_poll();
     while (key_poll() < 0) __asm__ volatile("pause");
     depth = 0;
     color = th->base; clear(); cursor_show();
-    __asm__ volatile("movl $0x90000, %%esp\n\tcall shell_main\n" : : : "memory");
+    __asm__ volatile("movq $0x90000, %%rsp\n\tcall shell_main\n" : : : "memory");
     for (;;) __asm__ volatile("hlt");
 }
 

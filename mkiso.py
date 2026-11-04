@@ -24,7 +24,7 @@ root = dirrec(21, SEC, 2, b'\x00')
 
 pvd = bytearray(SEC)
 pvd[0] = 1; pvd[1:6] = b'CD001'; pvd[6] = 1
-pvd[8:40] = pad('', 32); pvd[40:72] = pad('CRAVGOS_0_4', 32)
+pvd[8:40] = pad('', 32); pvd[40:72] = pad('CRAVGOS_64', 32)
 pvd[80:88] = b32(total)
 pvd[120:124] = b16(1); pvd[124:128] = b16(1); pvd[128:132] = b16(SEC)
 pvd[132:140] = b32(10)
