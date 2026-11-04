@@ -141,6 +141,16 @@ long_entry:
     movq $0x90000, %rsp
     cld
 
+    # Включаем FPU и SSE (CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1)
+    movq %cr0, %rax
+    andq $~0x04, %rax        # сбрасываем CR0.EM
+    orq  $0x02, %rax         # устанавливаем CR0.MP
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq  $(3 << 9), %rax     # CR4.OSFXSR (бит 9) и CR4.OSXMMEXCPT (бит 10)
+    movq %rax, %cr4
+    fninit                   # сброс/инициализация FPU
+
     # Обнуляем .bss
     movq $__bss_start, %rdi
     movq $__bss_end, %rcx

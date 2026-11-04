@@ -78,7 +78,7 @@ static const struct theme themes[] = {
     {"light",  0x70, 0x78, 0x71, 0x70, 0x1F, 0x74, 0x1F, 0x70, 0x1F, 0x72, 0x71, 0x71, 0x74, 0x78, 0x30, 0x1F},
 };
 #define NTHEMES ((int)(sizeof themes / sizeof themes[0]))
-static const struct theme *th = &themes[0];     /* dark - тема по умолчанию */
+static const struct theme *th = &themes[3];     /* amber - тема по умолчанию */
 static void theme_apply(int i) { th = &themes[i]; color = th->base; clear(); }
 static int theme_index(void) { return (int)(th - themes); }
 
@@ -99,7 +99,7 @@ static void vga_font_load(void) {
     }
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);
     outb(0x3C4, 0x02); outb(0x3C5, 0x03);          /* возвращаем текстовый режим */
-    outb(0x3C4, 0x04); outb(0x3C5, 0x03);
+    outb(0x3C4, 0x04); outb(0x3C5, 0x02);          /* standard text mode odd/even */
     outb(0x3C4, 0x00); outb(0x3C5, 0x03);
     outb(0x3CE, 0x04); outb(0x3CF, 0x00);
     outb(0x3CE, 0x05); outb(0x3CF, 0x10);
@@ -130,7 +130,6 @@ static u32 tod(void) {   /* секунд с начала суток */
     return bcd(cmos(4)) * 3600u + bcd(cmos(2)) * 60u + bcd(cmos(0));
 }
 static u32 boot_tod;
-static u32 uptime_s(void) { return (tod() + 86400u - boot_tod) % 86400u; }
 
 /* ---------- Таймер PIT (опрос, без прерываний) ---------- */
 static void pit_init(void) { outb(0x43, 0x34); outb(0x40, 0); outb(0x40, 0); }
@@ -143,6 +142,7 @@ static u32 now_ms(void) {              /* миллисекунды; вызыва
     while (pit_rem >= 1193) { pit_rem -= 1193; pit_ms++; }
     return pit_ms;
 }
+static u32 uptime_s(void) { return now_ms() / 1000u; }
 static void delay_ms(u32 ms) {
     u32 need = ms * 1193u, got = 0;
     u16 last = pit_read();
@@ -159,9 +159,12 @@ static int mx = 40, my = 12, mxa, mya, m_buttons, m_moved, m_click_l, m_click_r,
 static u8 mpkt[4];
 static int mpi, ms_shown, ms_idx;
 static u8 ms_orig;
-static void mouse_forget(void) { ms_shown = 0; }
-static void mouse_draw(void) {
+static void mouse_hide(void) {
     if (ms_shown) { vga[ms_idx] = (u16)((ms_orig << 8) | (vga[ms_idx] & 0xFF)); ms_shown = 0; }
+}
+static void mouse_forget(void) { mouse_hide(); }
+static void mouse_draw(void) {
+    mouse_hide();
     if (!mouse_ui || !mouse_ok) return;
     ms_idx = my * W + mx;
     u16 cell = vga[ms_idx];
@@ -267,6 +270,7 @@ static void ru_init(void) {                        /* ЙЦУКЕН в кодов
     smap_ru[0x03] = '"'; smap_ru[0x04] = '#'; smap_ru[0x05] = ';'; smap_ru[0x07] = ':'; smap_ru[0x08] = '?';
 }
 static int key_poll(void) {            /* -1 если клавиши нет */
+    now_ms();
     u8 st = inb(0x64);
     if (!(st & 1)) return -1;
     u8 sc = inb(0x60);
@@ -274,6 +278,10 @@ static int key_poll(void) {            /* -1 если клавиши нет */
     if (sc == 0xE0) { ext = 1; return -1; }
     if (ext) {
         ext = 0;
+        if (sc == 0x1D) { ctrl_ = 1; if (shift) kbd_ru ^= 1; return -1; }
+        if (sc == 0x9D) { ctrl_ = 0; return -1; }
+        if (sc == 0x38) { alt_ = 1; if (shift) kbd_ru ^= 1; return -1; }
+        if (sc == 0xB8) { alt_ = 0; return -1; }
         switch (sc) {
             case 0x48: return K_UP;
             case 0x50: return K_DOWN;
@@ -1000,6 +1008,7 @@ static int dlg_lines(const char *title, const char **lines, int n, int two) {
         if (two) btn(cax, y + h - 2, 10, "Cancel", focus == 1);
         mouse_draw();
         int k = ui_wait();
+        if (k == UI_MOVE) { mouse_draw(); continue; }
         if (k == '\n') res = (!two || focus == 0) ? 1 : 0;
         else if (k == 27) res = two ? 0 : 1;
         else if (two && (k == 'y' || k == 'Y')) res = 1;
@@ -1033,6 +1042,7 @@ static int dlg_input(const char *title, const char *prompt, char *buf, int max) 
         btn(cax, y + h - 2, 10, "Cancel", 0);
         mouse_draw();
         int k = ui_wait();
+        if (k == UI_MOVE) { mouse_draw(); continue; }
         if (k == '\n') res = 1;
         else if (k == 27) res = 0;
         else if (k == '\b') { if (n > 0) buf[--n] = 0; }
@@ -1060,6 +1070,7 @@ static int dlg_theme(void) {                    /* выбор темы; -1 ес�
         put_clip(x + 3, y + h - 2, "Enter/click = apply", w - 6, th->dlg);
         mouse_draw();
         int k = ui_wait();
+        if (k == UI_MOVE) { mouse_draw(); continue; }
         if (k == K_UP && f > 0) f--;
         else if (k == K_DOWN && f < NTHEMES - 1) f++;
         else if (k == '\n') res = f;
@@ -1732,7 +1743,10 @@ static void commander(void) {
         else if (k == UI_WHEEL) pn[p].sel += ui_wheel * 3;
         else if (k == UI_CLICK) {
             if (ui_cy == 24) quit = fm_fkey(ui_cx / 8 + 1);
-            else if (ui_cy == 0) { if (ui_cx >= W - 20) theme_apply((theme_index() + 1) % NTHEMES); }
+            else if (ui_cy == 0) {
+                if (ui_cx >= 19 && ui_cx <= 25) { kbd_ru ^= 1; redraw = 1; }
+                else if (ui_cx >= W - 20) theme_apply((theme_index() + 1) % NTHEMES);
+            }
             else {
                 int cp = ui_cx >= 40;
                 fm_act = cp;
@@ -2215,8 +2229,8 @@ void shell_main(void) {
 void kmain(void) {
     idt_init();                                    /* первым делом: исключения больше не убивают машину */
     ru_init(); vga_font_load(); vga_blink_off();   /* кириллица и 16 цветов фона */
-    th = &themes[0]; color = th->base;             /* тема dark по умолчанию */
-    pit_init(); pit_prev = pit_read();
+    th = &themes[3]; color = th->base;             /* тема amber по умолчанию */
+    pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
     boot_tod = tod();
     rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
     if (!rng) rng = 1;

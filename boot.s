@@ -90,6 +90,17 @@ mb_long_entry:
     movw %ax, %ss
     movq $0x90000, %rsp
     cld
+
+    # Включаем FPU и SSE (CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1)
+    movq %cr0, %rax
+    andq $~0x04, %rax
+    orq  $0x02, %rax
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq  $(3 << 9), %rax
+    movq %rax, %cr4
+    fninit
+
     call kmain
 2:  cli
     hlt
