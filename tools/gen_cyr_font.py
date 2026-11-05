@@ -107,10 +107,14 @@ if __name__=="__main__":
             for y in range(16): print(" ".join("".join("█" if (cl[y]>>(7-x))&1 else "·" for x in range(8)) for cl in cells))
             print()
     else:
-        with open(sys.argv[1] if len(sys.argv)>1 else "cyrfont.h","w") as f:
+        with open("cyrfont.h", "w") as f:
             f.write("/* сгенерировано tools/gen_cyr_font.py: кириллица 8x16 для VGA (CP866 коды 0x80-0xAF, 0xE0-0xF7) */\n#define CYR_N 72\nstatic const u8 cyr_code[CYR_N] = {")
             ks=sorted(font)
-            f.write(",".join("0x%02X"%k for k in ks)+"};\nstatic const u8 cyr_font[CYR_N][16] = {\n")
-            for k in ks: f.write("    {"+",".join("0x%02X"%b for b in font[k][1])+"},  /* %s */\n"%font[k][0])
-            f.write("};\n")
-        print("cyrfont.h written")
+            f.write(",".join("0x%02X"%k for k in ks)+"};\nextern const u8 cyr_font[CYR_N][16];\n")
+        with open("cyrfont.inc", "w") as f:
+            f.write("# сгенерировано tools/gen_cyr_font.py: глифы 8x16 CP866 для BIOS INT 10h\n")
+            f.write(".section .boot_font, \"a\"\n.global cyr_font\n.align 4\ncyr_font:\n")
+            ks=sorted(font)
+            for k in ks:
+                f.write("    .byte " + ",".join("0x%02X"%b for b in font[k][1]) + "  # %s\n" % font[k][0])
+        print("cyrfont.h and cyrfont.inc written")

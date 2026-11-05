@@ -13,7 +13,7 @@ endif
 
 all: cravgos.iso
 
-boot_iso.o: boot_iso.s
+boot_iso.o: boot_iso.s cyrfont.inc
 	as $< -o $@
 kernel.o: kernel.c fs.h net.h http.h html.h crypto.h tls.h image.h cyrfont.h
 	gcc $(CFLAGS) -c $< -o $@

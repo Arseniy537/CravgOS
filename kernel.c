@@ -8,6 +8,8 @@ typedef long long          intptr_t;
 
 static inline void outb(u16 p, u8 v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
 static inline u8 inb(u16 p) { u8 v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p)); return v; }
+static inline void outw(u16 p, u16 v) { __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p)); }
+static inline u16 inw(u16 p) { u16 v; __asm__ volatile("inw %1,%0":"=a"(v):"Nd"(p)); return v; }
 static inline void outl(u16 p, u32 v) { __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
 static inline u32 inl(u16 p) { u32 v; __asm__ volatile("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
 static inline u32 rdtsc32(void) { u32 a, d; __asm__ volatile("rdtsc":"=a"(a),"=d"(d)); return a; }
@@ -79,7 +81,14 @@ static const struct theme themes[] = {
 };
 #define NTHEMES ((int)(sizeof themes / sizeof themes[0]))
 static const struct theme *th = &themes[3];     /* amber - тема по умолчанию */
-static void theme_apply(int i) { th = &themes[i]; color = th->base; clear(); }
+static int disk_save(void);
+static int disk_loading = 0;
+static void theme_apply(int i) {
+    th = &themes[i];
+    color = th->base;
+    clear();
+    if (!disk_loading) disk_save();
+}
 static int theme_index(void) { return (int)(th - themes); }
 
 /* ---------- Кириллица: свой шрифт в видеопамяти, 16 цветов фона ---------- */
@@ -87,23 +96,33 @@ static void vga_font_load(void) {
     volatile u8 *fm = (volatile u8 *)0xA0000;
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);          /* синхронный сброс секвенсора */
     outb(0x3C4, 0x02); outb(0x3C5, 0x04);          /* запись только в plane 2 (там шрифт) */
-    outb(0x3C4, 0x04); outb(0x3C5, 0x07);          /* последовательная адресация */
+    outb(0x3C4, 0x04); outb(0x3C5, 0x06);          /* последовательная адресация (odd/even off) */
     outb(0x3C4, 0x00); outb(0x3C5, 0x03);
+
+    outb(0x3CE, 0x00); outb(0x3CF, 0x00);          /* set/reset = 0 */
+    outb(0x3CE, 0x01); outb(0x3CF, 0x00);          /* enable set/reset = 0 */
+    outb(0x3CE, 0x03); outb(0x3CF, 0x00);          /* data rotate = 0 */
     outb(0x3CE, 0x04); outb(0x3CF, 0x02);          /* чтение из plane 2 */
-    outb(0x3CE, 0x05); outb(0x3CF, 0x00);
-    outb(0x3CE, 0x06); outb(0x3CF, 0x04);          /* окно памяти шрифта A0000 */
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00);          /* write mode 0 */
+    outb(0x3CE, 0x06); outb(0x3CF, 0x04);          /* окно памяти шрифта A0000 (64K) */
+    outb(0x3CE, 0x08); outb(0x3CF, 0xFF);          /* битовая маска: все 8 бит */
+
     for (int i = 0; i < CYR_N; i++) {
         volatile u8 *g = fm + cyr_code[i] * 32;
         for (int r = 0; r < 16; r++) g[r] = cyr_font[i][r];
         for (int r = 16; r < 32; r++) g[r] = 0;
     }
+    __asm__ volatile("wbinvd":::"memory");
+
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);
     outb(0x3C4, 0x02); outb(0x3C5, 0x03);          /* возвращаем текстовый режим */
     outb(0x3C4, 0x04); outb(0x3C5, 0x02);          /* standard text mode odd/even */
     outb(0x3C4, 0x00); outb(0x3C5, 0x03);
+
     outb(0x3CE, 0x04); outb(0x3CF, 0x00);
-    outb(0x3CE, 0x05); outb(0x3CF, 0x10);
-    outb(0x3CE, 0x06); outb(0x3CF, 0x0E);
+    outb(0x3CE, 0x05); outb(0x3CF, 0x10);          /* odd/even host address */
+    outb(0x3CE, 0x06); outb(0x3CF, 0x0E);          /* map B8000 32K */
+    outb(0x3CE, 0x08); outb(0x3CF, 0xFF);
 }
 static void vga_blink_off(void) {                  /* бит 7 атрибута = яркий фон (16 цветов) вместо мигания */
     inb(0x3DA); outb(0x3C0, 0x30);
@@ -340,6 +359,212 @@ static int atoi_(const char **s) {
 }
 
 #include "fs.h"
+
+/* ---------- ATA PIO (Primary Master) & энергонезависимое хранилище ---------- */
+#define ATA_PORT_DATA       0x1F0
+#define ATA_PORT_ERROR      0x1F1
+#define ATA_PORT_SEC_COUNT  0x1F2
+#define ATA_PORT_LBA_LO     0x1F3
+#define ATA_PORT_LBA_MID    0x1F4
+#define ATA_PORT_LBA_HI     0x1F5
+#define ATA_PORT_DRIVE      0x1F6
+#define ATA_PORT_STATUS     0x1F7
+#define ATA_PORT_CMD        0x1F7
+#define ATA_PORT_CONTROL    0x3F6
+
+#define ATA_SR_BSY  0x80
+#define ATA_SR_DRDY 0x40
+#define ATA_SR_DF   0x20
+#define ATA_SR_DRQ  0x08
+#define ATA_SR_ERR  0x01
+
+#define ATA_CMD_READ_PIO    0x20
+#define ATA_CMD_WRITE_PIO   0x30
+#define ATA_CMD_CACHE_FLUSH 0xE7
+#define ATA_CMD_IDENTIFY    0xEC
+
+#define CRAVG_DISK_MAGIC 0x31534F4756415243ULL /* "CRAVGOS1" */
+
+static int ata_present;
+static u32 ata_sectors_total;
+
+static void ata_delay(void) {
+    inb(ATA_PORT_CONTROL); inb(ATA_PORT_CONTROL);
+    inb(ATA_PORT_CONTROL); inb(ATA_PORT_CONTROL);
+}
+
+static int ata_wait_bsy(void) {
+    for (int i = 0; i < 2000000; i++) {
+        u8 s = inb(ATA_PORT_STATUS);
+        if (!(s & ATA_SR_BSY)) return 0;
+        __asm__ volatile("pause");
+    }
+    return -1;
+}
+
+static int ata_wait_drq(void) {
+    for (int i = 0; i < 2000000; i++) {
+        u8 s = inb(ATA_PORT_STATUS);
+        if (s & (ATA_SR_ERR | ATA_SR_DF)) return -1;
+        if (!(s & ATA_SR_BSY) && (s & ATA_SR_DRQ)) return 0;
+        __asm__ volatile("pause");
+    }
+    return -1;
+}
+
+static int ata_init(void) {
+    ata_present = 0;
+    ata_sectors_total = 0;
+    u8 s = inb(ATA_PORT_STATUS);
+    if (s == 0xFF) return 0;
+
+    outb(ATA_PORT_DRIVE, 0xA0);
+    ata_delay();
+    outb(ATA_PORT_SEC_COUNT, 0);
+    outb(ATA_PORT_LBA_LO, 0);
+    outb(ATA_PORT_LBA_MID, 0);
+    outb(ATA_PORT_LBA_HI, 0);
+    outb(ATA_PORT_CMD, ATA_CMD_IDENTIFY);
+    ata_delay();
+
+    s = inb(ATA_PORT_STATUS);
+    if (!s) return 0;
+    if (ata_wait_bsy() < 0) return 0;
+
+    u8 mid = inb(ATA_PORT_LBA_MID);
+    u8 hi  = inb(ATA_PORT_LBA_HI);
+    if (mid != 0 || hi != 0) return 0;
+
+    if (ata_wait_drq() < 0) return 0;
+
+    u16 id[256];
+    for (int i = 0; i < 256; i++) id[i] = inw(ATA_PORT_DATA);
+
+    ata_sectors_total = id[60] | ((u32)id[61] << 16);
+    ata_present = 1;
+    return 1;
+}
+
+static int ata_read_sectors(u32 lba, u32 count, void *buf) {
+    if (!ata_present) return -1;
+    u16 *ptr = (u16 *)buf;
+    while (count > 0) {
+        u32 batch = count > 128 ? 128 : count;
+        if (ata_wait_bsy() < 0) return -1;
+        outb(ATA_PORT_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
+        outb(ATA_PORT_SEC_COUNT, (u8)batch);
+        outb(ATA_PORT_LBA_LO, (u8)(lba & 0xFF));
+        outb(ATA_PORT_LBA_MID, (u8)((lba >> 8) & 0xFF));
+        outb(ATA_PORT_LBA_HI, (u8)((lba >> 16) & 0xFF));
+        outb(ATA_PORT_CMD, ATA_CMD_READ_PIO);
+
+        for (u32 i = 0; i < batch; i++) {
+            ata_delay();
+            if (ata_wait_drq() < 0) return -1;
+            for (int w = 0; w < 256; w++) *ptr++ = inw(ATA_PORT_DATA);
+        }
+        lba += batch;
+        count -= batch;
+    }
+    return 0;
+}
+
+static int ata_write_sectors(u32 lba, u32 count, const void *buf) {
+    if (!ata_present) return -1;
+    const u16 *ptr = (const u16 *)buf;
+    while (count > 0) {
+        u32 batch = count > 128 ? 128 : count;
+        if (ata_wait_bsy() < 0) return -1;
+        outb(ATA_PORT_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
+        outb(ATA_PORT_SEC_COUNT, (u8)batch);
+        outb(ATA_PORT_LBA_LO, (u8)(lba & 0xFF));
+        outb(ATA_PORT_LBA_MID, (u8)((lba >> 8) & 0xFF));
+        outb(ATA_PORT_LBA_HI, (u8)((lba >> 16) & 0xFF));
+        outb(ATA_PORT_CMD, ATA_CMD_WRITE_PIO);
+
+        for (u32 i = 0; i < batch; i++) {
+            ata_delay();
+            if (ata_wait_drq() < 0) return -1;
+            for (int w = 0; w < 256; w++) outw(ATA_PORT_DATA, *ptr++);
+        }
+        lba += batch;
+        count -= batch;
+    }
+    if (ata_wait_bsy() == 0) {
+        outb(ATA_PORT_CMD, ATA_CMD_CACHE_FLUSH);
+        ata_wait_bsy();
+    }
+    return 0;
+}
+
+static u32 calc_checksum(const void *p, u32 len) {
+    const u8 *b = (const u8 *)p;
+    u32 sum = 0x5A5AA5A5;
+    for (u32 i = 0; i < len; i++) sum = ((sum << 5) | (sum >> 27)) + b[i] + 1;
+    return sum;
+}
+
+struct disk_super {
+    u64 magic;
+    u32 version;
+    u32 fsn_crc;
+    u32 data_crc;
+    u32 theme_idx;
+    u32 kbd_ru;
+    u32 fsn_bytes;
+    u32 data_bytes;
+    u8  pad[512 - 40];
+};
+
+static int disk_save(void) {
+    if (!ata_present) return -1;
+    struct disk_super sp;
+    for (unsigned i = 0; i < sizeof sp; i++) ((u8 *)&sp)[i] = 0;
+    sp.magic = CRAVG_DISK_MAGIC;
+    sp.version = 1;
+    sp.theme_idx = (u32)theme_index();
+    sp.kbd_ru = (u32)kbd_ru;
+    sp.fsn_bytes = (u32)sizeof fsn;
+    sp.data_bytes = (u32)sizeof fsdata;
+    sp.fsn_crc = calc_checksum(fsn, sizeof fsn);
+    sp.data_crc = calc_checksum(fsdata, sizeof fsdata);
+
+    /* Write fsn (3 sectors) at LBA 2 */
+    u8 sec_buf[512 * 3];
+    for (unsigned i = 0; i < sizeof sec_buf; i++) sec_buf[i] = 0;
+    for (unsigned i = 0; i < sizeof fsn; i++) sec_buf[i] = ((u8 *)fsn)[i];
+    if (ata_write_sectors(2, 3, sec_buf) < 0) return -1;
+
+    /* Write fsdata (256 sectors) at LBA 5 */
+    if (ata_write_sectors(5, 256, fsdata) < 0) return -1;
+
+    /* Write superblock at LBA 1 */
+    if (ata_write_sectors(1, 1, &sp) < 0) return -1;
+    return 0;
+}
+
+static int disk_load(void) {
+    if (!ata_present) return 0;
+    struct disk_super sp;
+    if (ata_read_sectors(1, 1, &sp) < 0) return 0;
+    if (sp.magic != CRAVG_DISK_MAGIC || sp.version != 1) return 0;
+    if (sp.fsn_bytes != sizeof fsn || sp.data_bytes != sizeof fsdata) return 0;
+
+    u8 sec_buf[512 * 3];
+    if (ata_read_sectors(2, 3, sec_buf) < 0) return 0;
+    if (calc_checksum(sec_buf, sizeof fsn) != sp.fsn_crc) return 0;
+
+    if (ata_read_sectors(5, 256, fsdata) < 0) return 0;
+    if (calc_checksum(fsdata, sizeof fsdata) != sp.data_crc) return 0;
+
+    disk_loading = 1;
+    for (unsigned i = 0; i < sizeof fsn; i++) ((u8 *)fsn)[i] = sec_buf[i];
+    fs_cwd = 0;
+    if (sp.theme_idx < (u32)NTHEMES) theme_apply((int)sp.theme_idx);
+    kbd_ru = sp.kbd_ru ? 1 : 0;
+    disk_loading = 0;
+    return 1;
+}
 #define XBSS __attribute__((section(".bss.xbig")))
 #include "net.h"
 #include "tls.h"
@@ -411,7 +636,11 @@ static void fetch(void) {
             putu(mem ? used * 100 / (mem * 1024) : 0); puts("% used)");
             break; }
         case 9: kv("Network", ""); if (nic_ok) { puts("e1000 "); putip(nip); } else puts("none"); break;
-        case 10: kv("Files", "RAMFS, "); putu(ffiles); puts(" files, "); putu(fbytes / 1024); puts(" KiB used"); break;
+        case 10:
+            kv("Files", ata_present ? "ATA Disk, " : "RAMFS, ");
+            putu(ffiles); puts(" files, "); putu(fbytes / 1024); puts(" KiB used");
+            if (ata_present) puts(" (persistent)");
+            break;
         case 11: for (int c = 0; c < 8; c++) { color = c << 4; puts("   "); } break;
         case 12: for (int c = 8; c < 16; c++) { color = c << 4; puts("   "); } break;
         }
@@ -918,6 +1147,9 @@ static void cmd_cat(char *args) {
     }
     if (fsn[i].size && fsdata[i][fsn[i].size - 1] != '\n') putc('\n');
 }
+static void fs_sync(void) {
+    if (ata_present && !disk_loading) disk_save();
+}
 static void write_text(const char *path, const char *text, int append) {
     int i = fs_resolve(path);
     if (i < 0) i = fs_create(path, 0);
@@ -925,6 +1157,7 @@ static void write_text(const char *path, const char *text, int append) {
     int r = fs_write(i, text, slen(text), append);
     if (r < 0) { fs_err(r); return; }
     fs_write(i, "\n", 1, 1);
+    fs_sync();
 }
 static void cmd_echo(char *args) {
     char *gt = 0;
@@ -1144,7 +1377,7 @@ static void editor(int idx) {
             }
             continue;
         }
-        if (k == 27) { fs_write(idx, buf, len, 0); break; }
+        if (k == 27) { fs_write(idx, buf, len, 0); fs_sync(); break; }
         else if (k == K_LEFT) { if (pos > 0) pos--; }
         else if (k == K_RIGHT) { if (pos < len) pos++; }
         else if (k == K_HOME) { while (pos > 0 && buf[pos - 1] != '\n') pos--; }
@@ -1649,6 +1882,7 @@ static void fm_copymove(int move) {
     }
     if (err) { fm_say(move ? "Moved " : "Copied ", ok, ", error: "); int q = slen(fm_msg); h_apnd(fm_msg, &q, sizeof fm_msg, fs_err_s(err)); }
     else fm_say(move ? "Moved " : "Copied ", ok, " item(s)");
+    if (ok) fs_sync();
 }
 static void fm_delete(void) {
     int tg[FS_MAXN], nt = fm_targets(tg);
@@ -1665,6 +1899,7 @@ static void fm_delete(void) {
     for (int i = 0; i < FS_MAXN; i++) if (!fsn[i].used) fm_mark[i] = 0;
     if (err) { dlg_msg("Delete", fs_err_s(err)); }
     fm_say("Deleted ", ok, " item(s)");
+    if (ok) fs_sync();
 }
 static void fm_make(int isdir) {
     char nm[80]; nm[0] = 0;
@@ -1679,6 +1914,7 @@ static void fm_make(int isdir) {
     for (int i = 0; i < fm_n[fm_act]; i++) if (fm_lst[fm_act][i] == r) { pn[fm_act].sel = i; break; }
     fm_refresh(fm_act);
     fm_say(isdir ? "Directory created" : "File created", -1, 0);
+    fs_sync();
 }
 static int fm_fkey(int n) {                    /* возвращает 1, если нужно выйти */
     int e = fm_sel_node(fm_act);
@@ -1881,7 +2117,8 @@ static const struct cinfo cmdtab[] = {
  {"cp", "", "cp SRC DST", "Copy a file or folder. DST may be an existing folder. Example: cp a.txt /docs"},
  {"mv", "", "mv SRC DST", "Move or rename. Example: mv a.txt b.txt"},
  {"tree", "", "tree", "Show all files and folders as a tree."},
- {"df", "", "df", "RAMFS usage: files, folders, bytes, free entries. Files live in RAM only and vanish on reboot."},
+ {"df", "", "df", "Storage usage: files, folders, bytes, free entries."},
+ {"save", "sync", "save", "Save filesystem, current theme and keyboard layout to ATA hard drive. Example: save"},
  {"write", "", "write FILE TEXT", "Create or overwrite a file with one line of text. Example: write n.txt hello"},
  {"append", "", "append FILE TEXT", "Add one line of text to the end of a file."},
  {"edit", "", "edit FILE", "Full-screen editor; a mouse click moves the cursor. Esc saves and exits. Creates the file if it is missing."},
@@ -1950,10 +2187,10 @@ static void help(char *args) {
     bx_row("CRAVGOS 0.5 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
-    bx_row("         ", "fastfetch free reboot halt crashtest", 78);
+    bx_row("         ", "fastfetch free save reboot halt crashtest", 78);
     bx_mid(78);
     bx_row("FILES    ", "fm (two-panel commander) ls cd pwd mkdir touch cat rm cp mv", 78);
-    bx_row("         ", "tree df write append edit", 78);
+    bx_row("         ", "tree df write append edit save", 78);
     bx_mid(78);
     bx_row("NETWORK  ", "web (http+https browser) curl ifconfig dhcp dns ping", 78);
     bx_row("         ", "nslookup netdiag arp lspci", 78);
@@ -1971,8 +2208,13 @@ static void cmd_free(void) {
     fs_usage(&nf, &nd, &nb);
     puts("Total RAM        "); put_mib(total); puts(" MiB\n");
     puts("Kernel image     "); put_mib(img); puts(" MiB   code and read-only data\n");
-    puts("Static buffers   "); put_mib(low + big); puts(" MiB   network rings, RAMFS storage, browser, TLS\n");
-    puts("RAMFS in files   "); putu(nb); puts(" bytes in "); putu(nf); puts(" files (limit "); putu(FS_MAXN * FS_FSZ / 1024); puts(" KiB)\n");
+    puts("Static buffers   "); put_mib(low + big); puts(" MiB   network rings, storage, browser, TLS\n");
+    if (ata_present) {
+        puts("ATA Hard Drive   "); putu(ata_sectors_total * 512 / (1024 * 1024)); puts(" MiB   persistent storage\n");
+    } else {
+        puts("Storage type     RAMFS volatile (no ATA disk)\n");
+    }
+    puts("Filesystem       "); putu(nb); puts(" bytes in "); putu(nf); puts(" files (limit "); putu(FS_MAXN * FS_FSZ / 1024); puts(" KiB)\n");
     puts("Used by Cravgos  "); put_mib(used); puts(" MiB   ");
     putu(total ? used * 100 / total : 0); puts("%\n");
     puts("Free             "); put_mib(total > used ? total - used : 0); puts(" MiB\n");
@@ -2057,23 +2299,34 @@ static void run(char *line) {
             if (r < 0) fs_err(r);
         }
         if (!any) puts("usage: mkdir|touch NAME...\n");
+        else fs_sync();
     }
     else if (streq(cmd, "cat")) cmd_cat(args);
     else if (streq(cmd, "rm")) {
         char *a; int any = 0;
         while ((a = tok(&args))) { any = 1; int i = fs_resolve(a); if (i < 0) fs_err(FS_ENOENT); else { int r = fs_remove(i); if (r < 0) fs_err(r); } }
         if (!any) puts("usage: rm NAME...\n");
+        else fs_sync();
     }
     else if (streq(cmd, "cp") || streq(cmd, "mv")) {
         char *a = tok(&args), *b = tok(&args);
         if (!a || !b) puts("usage: cp|mv SRC DST\n");
-        else { int r = (cmd[0] == 'c') ? fs_copy(a, b) : fs_move(a, b); if (r < 0) fs_err(r); }
+        else { int r = (cmd[0] == 'c') ? fs_copy(a, b) : fs_move(a, b); if (r < 0) fs_err(r); else fs_sync(); }
     }
     else if (streq(cmd, "tree")) { puts("/\n"); tree_rec(0, 1); }
     else if (streq(cmd, "df")) {
         int nf, nd, nb; fs_usage(&nf, &nd, &nb);
-        puts("RAMFS: "); putu(nf); puts(" files, "); putu(nd); puts(" dirs, "); putu(nb); puts(" bytes in files; ");
+        puts(ata_present ? "ATA Disk: " : "RAMFS: "); putu(nf); puts(" files, "); putu(nd); puts(" dirs, "); putu(nb); puts(" bytes in files; ");
         putu(FS_MAXN - 1 - nf - nd); puts(" free entries (max "); putu(FS_FSZ); puts(" B per file)\n");
+    }
+    else if (streq(cmd, "save") || streq(cmd, "sync")) {
+        if (!ata_present) {
+            puts("save: no persistent ATA disk detected (RAMFS only)\n");
+        } else if (disk_save() == 0) {
+            puts("Files, theme, and layout saved to ATA hard disk (260 sectors).\n");
+        } else {
+            puts("save: error writing to ATA hard disk\n");
+        }
     }
     else if (streq(cmd, "write") || streq(cmd, "append")) {
         char *f = tok(&args);
@@ -2138,7 +2391,7 @@ static void fs_boot(void) {
     int h = fs_create("/home", 1), d = fs_create("/docs", 1);
     (void)h; (void)d;
     write_text("/readme.txt",
-        "Welcome to Cravgos!\nFiles live in RAM and vanish on reboot.\n"
+        "Welcome to Cravgos!\nPersistent storage: files and settings are saved automatically.\n"
         "Try: ls, tree, edit notes.txt, ping 10.0.2.2, fastfetch", 0);
     write_text("/docs/commands.txt", "ls cd cat edit cp mv rm mkdir | ping nslookup dhcp | snake guess rps", 0);
 }
@@ -2235,7 +2488,11 @@ void kmain(void) {
     rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
     if (!rng) rng = 1;
     dhcp_xid ^= rng;
-    fs_boot();
+    ata_init();
+    if (!disk_load()) {
+        fs_boot();
+        if (ata_present) disk_save();
+    }
     nic_tx = e1000_send; nic_rx = e1000_recv; ms_now = now_ms;
     nic_ok = e1000_init();
     if (nic_ok) { nip = 0x0A00020F; nmask = 0xFFFFFF00u; ngw = 0x0A000202; ndns = 0x0A000203; }
@@ -2246,6 +2503,13 @@ void kmain(void) {
     putc('\n');
     if (nic_ok) { puts("network: e1000  MAC "); putmac(nmac); puts("  ip "); putip(nip); puts("   (run 'dhcp' if not on NAT)\n"); }
     else puts("network: no supported card (run 'lspci')\n");
+    if (ata_present) {
+        puts("storage: ATA Primary Master (");
+        putu(ata_sectors_total * 512 / (1024 * 1024));
+        puts(" MiB) - changes saved to hard disk\n");
+    } else {
+        puts("storage: RAMFS only (no ATA hard disk detected)\n");
+    }
     putc('\n');
     shell_main();
 }

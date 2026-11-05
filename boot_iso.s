@@ -6,6 +6,28 @@
 _start16:
     movw $0x0003, %ax        # текстовый режим 80x25
     int  $0x10
+
+    # Загружаем кириллический шрифт через BIOS INT 10h, AX=1100h
+    pushw %es
+    xorw  %ax, %ax
+    movw  %ax, %es
+    movw  $cyr_font, %bp
+    movw  $0x1100, %ax
+    movb  $16, %bh          # 16 байт на глиф
+    movb  $0, %bl           # блок шрифта 0
+    movw  $48, %cx          # 48 глифов (0x80..0xAF)
+    movw  $0x0080, %dx      # начиная с 0x80
+    int   $0x10
+
+    movw  $(cyr_font + 768), %bp
+    movw  $0x1100, %ax
+    movb  $16, %bh
+    movb  $0, %bl
+    movw  $24, %cx          # 24 глифа (0xE0..0xF7)
+    movw  $0x00E0, %dx      # начиная с 0xE0
+    int   $0x10
+    popw  %es
+
     cli
     xorw %ax, %ax
     movw %ax, %ds
@@ -158,6 +180,13 @@ long_entry:
     xorl %eax, %eax
     rep stosb
 
+    # Обнуляем .bigbss
+    movq $__bigbss_start, %rdi
+    movq $__bigbss_end, %rcx
+    subq %rdi, %rcx
+    xorl %eax, %eax
+    rep stosb
+
     call kmain
 1:  cli
     hlt
@@ -256,3 +285,5 @@ isr_table:
 exc_stack:
     .skip 8192
 exc_stack_top:
+
+.include "cyrfont.inc"
