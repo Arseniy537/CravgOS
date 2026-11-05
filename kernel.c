@@ -832,13 +832,13 @@ static void lspci(void) {
 }
 
 #define E1000_RX 32
-#define E1000_TX 8
+#define E1000_TX 32
 struct rxd { u32 lo, hi; u16 len, csum; u8 status, err; u16 spec; } __attribute__((packed));
 struct txd { u32 lo, hi; u16 len; u8 cso, cmd, status, css; u16 spec; } __attribute__((packed));
-static volatile struct rxd rxr[E1000_RX] __attribute__((aligned(16)));
-static volatile struct txd txr[E1000_TX] __attribute__((aligned(16)));
-static u8 rxbuf[E1000_RX][2048] __attribute__((aligned(16)));
-static u8 txbuf[E1000_TX][2048] __attribute__((aligned(16)));
+static volatile struct rxd rxr[E1000_RX] __attribute__((aligned(128)));
+static volatile struct txd txr[E1000_TX] __attribute__((aligned(128)));
+static u8 rxbuf[E1000_RX][2048] __attribute__((aligned(128)));
+static u8 txbuf[E1000_TX][2048] __attribute__((aligned(128)));
 static volatile u32 *nicm;
 static u32 rx_cur, tx_cur;
 static u32 nr(u32 reg) { return nicm[reg / 4]; }
@@ -852,6 +852,7 @@ static int e1000_send(const u8 *d, int len) {
     t->lo = (u32)(uintptr_t)txbuf[tx_cur]; t->hi = (u32)((uintptr_t)txbuf[tx_cur] >> 32); t->len = len;
     t->cso = 0; t->cmd = 0x0B; t->status = 0; t->css = 0; t->spec = 0;   /* EOP | IFCS | RS */
     tx_cur = (tx_cur + 1) % E1000_TX;
+    __asm__ volatile("mfence" : : : "memory");
     nw(0x3818, tx_cur);
     return 0;
 }
@@ -861,7 +862,10 @@ static int e1000_recv(u8 *buf, int max) {
     int len = r->len;
     if (len > max) len = max;
     for (int i = 0; i < len; i++) buf[i] = rxbuf[rx_cur][i];
+    r->lo = (u32)(uintptr_t)rxbuf[rx_cur];
+    r->hi = (u32)((uintptr_t)rxbuf[rx_cur] >> 32);
     r->status = 0;
+    __asm__ volatile("mfence" : : : "memory");
     nw(0x2818, rx_cur);
     rx_cur = (rx_cur + 1) % E1000_RX;
     return len;
@@ -2463,7 +2467,7 @@ void exception_handler(struct exc_frame *f) {
     while (key_poll() < 0) __asm__ volatile("pause");
     depth = 0;
     color = th->base; clear(); cursor_show();
-    __asm__ volatile("movq $0x90000, %%rsp\n\tcall shell_main\n" : : : "memory");
+    __asm__ volatile("movq $0x800000, %%rsp\n\tcall shell_main\n" : : : "memory");
     for (;;) __asm__ volatile("hlt");
 }
 

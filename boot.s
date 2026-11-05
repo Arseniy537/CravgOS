@@ -88,7 +88,7 @@ mb_long_entry:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
-    movq $0x90000, %rsp
+    movq $0x800000, %rsp
     cld
 
     # Включаем FPU и SSE (CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1)

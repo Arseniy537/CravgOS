@@ -1,5 +1,5 @@
 # Сборка Cravgos x86_64: нужны gcc, binutils и python
-CFLAGS = -I. -m64 -mgeneral-regs-only -ffreestanding -fno-pie -fno-stack-protector -mno-red-zone -mno-stack-arg-probe -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra
+CFLAGS = -I. -m64 -mgeneral-regs-only -ffreestanding -fno-pie -fno-stack-protector -mno-red-zone -mno-stack-arg-probe -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -fno-tree-loop-distribute-patterns -fno-optimize-sibling-calls -O2 -Wall -Wextra
 
 ifeq ($(OS),Windows_NT)
     PYTHON ?= python

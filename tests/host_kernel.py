@@ -13,7 +13,7 @@ k = k.replace('void kmain(void) {', 'void kmain_unused(void) {')
 k = re.sub(r'extern char _start16\[\][^\n]*', 'static char host_mem[4000000];\n#define _start16 (host_mem)\n#define __bss_start (host_mem+90000)\n#define __bss_end (host_mem+240000)\n#define __bigbss_start (host_mem+300000)\n#define __bigbss_end (host_mem+1800000)', k)
 k = re.sub(r'extern const u(32|64) isr_table\[\];', 'static const u64 isr_table[33] = {' + ','.join(str(0x1000 + 16*i) for i in range(33)) + '};', k)
 k = k.replace('__asm__ volatile("lidt %0" : : "m"(d));', '(void)d;')
-k = re.sub(r'__asm__ volatile\("mov[lq] \$0x90000, %%[er]sp\\n\\tcall shell_main\\n" : : : "memory"\);', 'host_exc_done();', k)
+k = re.sub(r'__asm__ volatile\("mov[lq] \$0x[0-9a-fA-F]+, %%[er]sp\\n\\tcall shell_main\\n" : : : "memory"\);', 'host_exc_done();', k)
 assert 'host_exc_done' in k and 'host_mem' in k, "host patching failed"
 pre = 'void host_exc_done(void);\nunsigned char host_inb(unsigned short); void host_outb(unsigned short, unsigned char); unsigned host_inl(unsigned short); void host_outl(unsigned short, unsigned);\n'
 mainfile = sys.argv[1] if len(sys.argv) > 1 else 'host_main.c'

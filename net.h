@@ -53,7 +53,9 @@ static int eth_send(const u8 *dst, u16 type, const u8 *pl, int len) {
     int n = 14 + len;
     while (n < 60) txb[n++] = 0;
     st_tx++;
-    return nic_tx(txb, n);
+    int res = nic_tx(txb, n);
+    __asm__ volatile("" : : "r"(res) : "memory");
+    return res;
 }
 static void arp_send(u16 op, const u8 *dmac, u32 tip, const u8 *tmac) {
     u8 p[28];
@@ -72,7 +74,9 @@ static int ip_send_to(const u8 *dmac, u32 src, u32 dst, u8 proto, const u8 *pl, 
     p[8] = 64; p[9] = proto; be16(p + 10, 0); be32(p + 12, src); be32(p + 16, dst);
     be16(p + 10, net_cksum(p, 20));
     for (int i = 0; i < len; i++) p[20 + i] = pl[i];
-    return eth_send(dmac, ETH_IP, p, 20 + len);
+    int res = eth_send(dmac, ETH_IP, p, 20 + len);
+    __asm__ volatile("" : : "r"(res) : "memory");
+    return res;
 }
 static void net_poll(void);
 static const u8 *net_mac_for(u32 dst) {
@@ -104,7 +108,9 @@ static int udp_send(const u8 *dmac, u32 src, u32 dst, u16 sp, u16 dp, const u8 *
     be16(udpb, sp); be16(udpb + 2, dp); be16(udpb + 4, 8 + len); be16(udpb + 6, 0);
     for (int i = 0; i < len; i++) udpb[8 + i] = d[i];
     { u16 ck = udp_sum(src, dst, udpb, 8 + len); be16(udpb + 6, ck ? ck : 0xFFFF); }
-    return ip_send_to(dmac, src, dst, 17, udpb, 8 + len);
+    int res = ip_send_to(dmac, src, dst, 17, udpb, 8 + len);
+    __asm__ volatile("" : : "r"(res) : "memory");
+    return res;
 }
 
 /* ---- ICMP / ping ---- */
@@ -247,7 +253,9 @@ static void tcp_emit(u8 flags, const u8 *data, int len) {
     if (hl == 24) { h[20] = 2; h[21] = 4; be16(h + 22, 1460); }
     for (int i = 0; i < len; i++) h[hl + i] = data[i];
     be16(h + 16, tcp_sum(nip, tcp_rip, h, hl + len));
-    ip_send_to(tcp_dmac, nip, tcp_rip, 6, h, hl + len);
+    int res = ip_send_to(tcp_dmac, nip, tcp_rip, 6, h, hl + len);
+    __asm__ volatile("" : : "r"(res) : "memory");
+    (void)res;
 }
 static int tcp_connect(u32 ip, u16 port) {
     tcp_state = TCP_CLOSED; tcp_fin = tcp_rst = tcp_overflow = 0; tcp_blen = 0;
@@ -486,23 +494,25 @@ static void ip_in(const u8 *smac, const u8 *p, int len) {
     }
 }
 static void net_poll(void) {
-    int n = nic_rx(rxb, sizeof rxb);
-    if (n < 14) return;
-    st_rx++;
-    u16 type = rd16(rxb + 12);
-    const u8 *p = rxb + 14;
-    int len = n - 14;
-    if (type == ETH_ARP && len >= 28) {
-        st_arp++;
-        if (rd16(p) == 1 && rd16(p + 2) == 0x0800 && p[4] == 6 && p[5] == 4) {
-            u16 op = rd16(p + 6);
-            u32 sip = rd32(p + 14), tip = rd32(p + 24);
-            if (op == 2 || (op == 1 && nip && tip == nip)) arp_add(sip, p + 8);
-            if (op == 1 && nip && tip == nip) arp_send(2, p + 8, sip, p + 8);
+    for (int iter = 0; iter < 16; iter++) {
+        int n = nic_rx(rxb, sizeof rxb);
+        if (n < 14) break;
+        st_rx++;
+        u16 type = rd16(rxb + 12);
+        const u8 *p = rxb + 14;
+        int len = n - 14;
+        if (type == ETH_ARP && len >= 28) {
+            st_arp++;
+            if (rd16(p) == 1 && rd16(p + 2) == 0x0800 && p[4] == 6 && p[5] == 4) {
+                u16 op = rd16(p + 6);
+                u32 sip = rd32(p + 14), tip = rd32(p + 24);
+                if (op == 2 || (op == 1 && nip && tip == nip)) arp_add(sip, p + 8);
+                if (op == 1 && nip && tip == nip) arp_send(2, p + 8, sip, p + 8);
+            }
+        } else if (type == ETH_IP) {
+            st_ip++;
+            ip_in(rxb + 6, p, len);
         }
-    } else if (type == ETH_IP) {
-        st_ip++;
-        ip_in(rxb + 6, p, len);
     }
 }
 
