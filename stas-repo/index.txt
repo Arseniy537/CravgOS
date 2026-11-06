@@ -1,0 +1,1 @@
+nim 8bd46690baf6d7cd6887e3e9aa9027569d5e80caf256e638c719c25aaf346283 587 game: take 1-3 sticks, whoever takes the LAST stick loses

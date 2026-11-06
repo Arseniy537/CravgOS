@@ -15,7 +15,7 @@ all: cravgos.iso
 
 boot_iso.o: boot_iso.s cyrfont.inc
 	as $< -o $@
-kernel.o: kernel.c fs.h net.h http.h html.h crypto.h tls.h image.h cyrfont.h
+kernel.o: kernel.c stas.h fs.h net.h http.h html.h crypto.h tls.h image.h cyrfont.h
 	gcc $(CFLAGS) -c $< -o $@
 cravgos.elf: boot_iso.o kernel.o linker_iso.ld
 	ld $(LDFLAGS) -T linker_iso.ld -o $@ boot_iso.o kernel.o
@@ -40,6 +40,7 @@ test:
 	gcc -Wall -Wno-unused-function -fsanitize=address,undefined -I. -o /tmp/test_image tests/test_image.c && $(PYTHON) tests/gen_images.py /tmp/cimg && /tmp/test_image /tmp/cimg/*
 	gcc -Wall -Wno-unused-function -I. -o /tmp/test_http tests/test_http.c && /tmp/test_http
 	gcc -Wall -Wno-unused-function -I. -o /tmp/test_crypto tests/test_crypto.c && /tmp/test_crypto
+	gcc -Wall -Wno-unused-function -I. -o /tmp/test_stas tests/test_stas.c && /tmp/test_stas
 	bash tests/run_tls_tests.sh
 	bash tests/run_https_e2e.sh
 

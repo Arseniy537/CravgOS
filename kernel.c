@@ -624,7 +624,7 @@ static void fetch(void) {
         switch (i) {
         case 0: color = th->user; puts("user"); color = th->base; puts("@"); color = th->user; puts("cravgos"); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.5 x86_64"); break;
+        case 2: kv("OS", "Cravgos 0.6 x86_64"); break;
         case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
@@ -2136,6 +2136,7 @@ static const struct cinfo cmdtab[] = {
  {"lspci", "", "lspci", "List PCI devices; shows whether your network card is supported."},
  {"web", "browse", "web [URL]", "Mouse browser for http and https with Cyrillic text and PNG/JPEG/GIF pictures (up to 6 per page, shown in 16 colours; Esc skips loading). Click links, wheel scrolls, G types an address, B back, Q quits."},
  {"curl", "wget", "curl URL", "Print a web page as text inside the shell (Esc cancels). Example: curl example.com"},
+ {"stas", "", "stas update|list|info|install|remove|run|repo", "Package manager. Packages (small scripts, games) come from your own repository: stas update, stas list, stas install nim, then just type nim. stas repo URL changes the repository; stas alone shows help."},
  {"guess", "", "guess", "Number guessing game: 1-100 in 7 tries."},
  {"rps", "", "rps", "Rock-paper-scissors against the computer (r / p / s, q quits)."},
  {"snake", "", "snake", "Snake with arrows or WASD; Q quits."},
@@ -2158,6 +2159,7 @@ static const struct cinfo *cmd_find(const char *w) {
     for (int i = 0; i < NCMD; i++) if (streq(cmdtab[i].name, w) || word_in(cmdtab[i].alias, w)) return &cmdtab[i];
     return 0;
 }
+#include "stas.h"
 static void bx_para(const char *lab, const char *txt, int w) {
     int ll = slen(lab), inner = w - 4 - ll, first = 1;
     char pad[16], line[80];
@@ -2188,7 +2190,7 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.5 (x86_64) - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.6 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
     bx_row("         ", "fastfetch free save reboot halt crashtest", 78);
@@ -2199,7 +2201,7 @@ static void help(char *args) {
     bx_row("NETWORK  ", "web (http+https browser) curl ifconfig dhcp dns ping", 78);
     bx_row("         ", "nslookup netdiag arp lspci", 78);
     bx_mid(78);
-    bx_row("TOOLS    ", "calc cowsay", 78);
+    bx_row("TOOLS    ", "calc cowsay stas (packages)", 78);
     bx_row("GAMES    ", "guess rps snake                FUN   matrix beep", 78);
     bx_mid(78);
     bx_row("TIP      ", "help COMMAND shows usage and an example, e.g.  help ping", 78);
@@ -2230,7 +2232,7 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.5 (x86_64)", "  -  terminal operating system for x86_64", 62);
+    bx_row("Cravgos 0.6 (x86_64)", "  -  terminal operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
@@ -2251,7 +2253,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.5 (x86_64)  -  64-bit terminal OS", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.6 (x86_64)  -  64-bit terminal OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2286,7 +2288,7 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.5 (x86_64) - terminal-only 64-bit OS (long mode, mouse, themes, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.6 (x86_64) - terminal-only 64-bit OS (long mode, mouse, themes, http+https)\n");
     /* файлы */
     else if (streq(cmd, "ls")) cmd_ls(args);
     else if (streq(cmd, "pwd")) { char p[256]; fs_path(fs_cwd, p); puts(p); putc('\n'); }
@@ -2358,6 +2360,7 @@ static void run(char *line) {
     else if (streq(cmd, "curl") || streq(cmd, "wget")) cmd_curl(args);
     else if (streq(cmd, "fm") || streq(cmd, "mc") || streq(cmd, "files")) commander();
     else if (streq(cmd, "theme")) cmd_theme(args);
+    else if (streq(cmd, "stas")) cmd_stas(args);
     /* игры и прочее */
     else if (streq(cmd, "guess")) game_guess();
     else if (streq(cmd, "rps")) game_rps();
@@ -2387,6 +2390,7 @@ static void run(char *line) {
     }
     else if (streq(cmd, "free") || streq(cmd, "mem")) cmd_free();
     else if (streq(cmd, "crashtest")) { puts("Raising a CPU exception on purpose (ud2)...\n"); __asm__ volatile("ud2"); }
+    else if (stas_try_app(cmd)) { }
     else { puts("unknown command: "); puts(cmd); puts("  (try 'help')\n"); }
 }
 

@@ -5,7 +5,7 @@
 ## 1. Назначение и архитектура
 - Учебная текстовая ОС без GUI: терминал 80x25, собственное 64-битное x86_64-ядро (Long Mode / IA-32e), загрузка с ISO в виртуальной машине (VirtualBox, сетевая карта Intel e1000 / NAT). [ФАКТ]
 - Ядро и оболочка — один файл `kernel.c` (~2200 строк) + заголовки-модули (`net.h`, `fs.h`, `http.h`, `tls.h`, `crypto.h`, `html.h`, `image.h`, `cyrfont.h`). [ФАКТ]
-- Текущая версия: **0.5 (x86_64)** (выпущен `cravgos.iso`, образ загружается в 64-битный Long Mode). [ФАКТ]
+- Текущая версия: **0.6 (x86_64)** (выпущен `cravgos.iso`, образ загружается в 64-битный Long Mode). [ФАКТ]
 
 ## 2. Язык, загрузка, целевая среда
 - C (freestanding, `-m64`, `-mno-red-zone`, `-mno-stack-arg-probe`), ассемблер GAS для загрузчика, Python для сборки ISO и генерации шрифта. [ФАКТ]
@@ -22,6 +22,8 @@
 | `net.h` | ARP/IPv4/ICMP/UDP/DHCP/DNS/TCP |
 | `http.h` | HTTP/1.0 клиент, редиректы (до 6), chunked, DNS-over-HTTPS как запасной DNS |
 | `tls.h`, `crypto.h` | TLS 1.2 (ECDHE X25519/P-256, AES-128-GCM), sha256/hmac/aes/gcm/x25519. Сертификат сервера НЕ проверяется |
+| `stas.h` | пакетный менеджер `stas` (update/list/info/install/remove/run/repo) + мини-язык скриптов пакетов; репозиторий — каталог HTTP(S) с `index.txt` (`имя sha256 размер описание`) и `<имя>.stp`; установка в `/apps/<имя>`, проверка размера и SHA-256, установленный пакет запускается как команда (fallback в `run()`) |
+| `stas-repo/`, `tools/stas_mkrepo.py` | репозиторий по умолчанию (`nim.stp` — игра) и генератор `index.txt` |
 | `fs.h` | RAMFS: 64 узла × 2048 байт, только в памяти |
 | `html.h` | HTML → текстовая страница 80 колонок, ссылки, кодировки (UTF-8/1251/KOI8/866), `<img>` резервирует 12 строк |
 | `image.h` | декодеры PNG (в т.ч. interlaced), JPEG (baseline+progressive), GIF; вывод в 16 цветов полублоками (0xDF) с дизерингом |
@@ -87,3 +89,9 @@ make run        # цель есть в Makefile; требует QEMU [ПРОВЕ
 3. Разобраться с NXDOMAIN/DNS на сети пользователя (`netdiag` даёт rcode по серверам).
 4. Решить судьбу Linux-порта: синхронизировать `cravgos-linux/src` с 0.4, написать `init.c`, rootfs, конфиг ядра, UEFI-ISO — в среде с доступом к исходникам Linux и grub/xorriso.
 5. Улучшения: keep-alive/HTTP/1.1, больше картинок и больший буфер, `data:` URI, проверка сертификатов, UEFI/USB.
+
+## 10. stas (v0.6) [ФАКТ: хост-тесты; в VM не проверялось]
+- Репозиторий по умолчанию: `https://raw.githubusercontent.com/Arseniy537/CravgOS/main/stas-repo` (нужно закоммитить каталог `stas-repo/`). Локально: `cd stas-repo && python3 -m http.server 8000`, в ОС `stas repo http://10.0.2.2:8000`.
+- После изменения/добавления `.stp`: `python3 tools/stas_mkrepo.py stas-repo` (обновляет index.txt; лимиты: пакет и индекс ≤ 2048 байт, имя `[a-z0-9_-]{1,15}`).
+- Скрипты не могут писать файлы и открывать сеть. Esc прерывает; лимит 300000 шагов. Сертификат TLS не проверяется, поэтому SHA-256 защищает от порчи, но не от злонамеренного сервера.
+- Тесты: `make test` (tests/test_stas.c), `python3 tests/host_stas.py && /tmp/host_stas` (настоящий kernel.c + мок-HTTP). Старый `tests/host_kernel.py` сам по себе не собирается: не определён `cyr_font` (он в boot_iso.s), в host_main.c стейл-проверка IDT (шаг 8 вместо 16 байт).

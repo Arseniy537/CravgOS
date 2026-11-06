@@ -1,0 +1,35 @@
+# nim - game: take 1-3 sticks, whoever takes the LAST stick loses
+let s = rnd 10
+let s = s + 15
+say
+say === NIM ===
+say Take 1, 2 or 3 sticks. The last stick loses. 0 quits.
+:turn
+say
+say Sticks left: $s
+:ask
+put Your move (1-3):$_
+ask t
+if t = 0 goto bye
+if t < 1 goto ask
+if t > 3 goto ask
+if t > s goto ask
+let s = s - t
+if s = 0 goto lose
+let t = s - 1
+let t = t % 4
+if t > 0 goto cpu
+let t = 1
+:cpu
+say Computer takes $t
+let s = s - t
+if s = 0 goto win
+goto turn
+:lose
+say You took the last stick. You lose!
+end
+:win
+say The computer took the last stick. You win!
+end
+:bye
+say Bye!
