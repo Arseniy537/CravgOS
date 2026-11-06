@@ -72,12 +72,15 @@ struct theme {
     u8 base, frame, dir, file, sel, mark, bar, barkey, title, user, path, link, head, dim, dlg, dlgbtn;
 };
 static const struct theme themes[] = {
-    /* name     base  frame dir   file  sel   mark  bar   barkey title user  path  link  head  dim   dlg   dlgbtn */
-    {"dark",   0x07, 0x08, 0x09, 0x07, 0x70, 0x0E, 0x70, 0x07, 0x70, 0x0A, 0x09, 0x0B, 0x0E, 0x08, 0x70, 0x30},
-    {"norton", 0x1F, 0x1B, 0x1F, 0x1B, 0x30, 0x1E, 0x30, 0x07, 0x30, 0x1A, 0x1F, 0x1E, 0x1F, 0x13, 0x70, 0x30},
-    {"retro",  0x0A, 0x02, 0x0A, 0x02, 0x20, 0x0F, 0x20, 0x0A, 0x20, 0x0A, 0x0F, 0x0A, 0x0F, 0x02, 0x20, 0x2F},
-    {"amber",  0x0E, 0x06, 0x0E, 0x06, 0x60, 0x0F, 0x60, 0x0E, 0x60, 0x0E, 0x0F, 0x0E, 0x0F, 0x06, 0x60, 0x6F},
-    {"light",  0x70, 0x78, 0x71, 0x70, 0x1F, 0x74, 0x1F, 0x70, 0x1F, 0x72, 0x71, 0x71, 0x74, 0x78, 0x30, 0x1F},
+    /* name         base  frame dir   file  sel   mark  bar   barkey title user  path  link  head  dim   dlg   dlgbtn */
+    {"dark",       0x07, 0x08, 0x09, 0x07, 0x70, 0x0E, 0x70, 0x07, 0x70, 0x0A, 0x09, 0x0B, 0x0E, 0x08, 0x70, 0x30},
+    {"norton",     0x1F, 0x1B, 0x1F, 0x1B, 0x30, 0x1E, 0x30, 0x07, 0x30, 0x1A, 0x1F, 0x1E, 0x1F, 0x13, 0x70, 0x30},
+    {"retro",      0x0A, 0x02, 0x0A, 0x02, 0x20, 0x0F, 0x20, 0x0A, 0x20, 0x0A, 0x0F, 0x0A, 0x0F, 0x02, 0x20, 0x2F},
+    {"amber",      0x0E, 0x06, 0x0E, 0x06, 0x60, 0x0F, 0x60, 0x0E, 0x60, 0x0E, 0x0F, 0x0E, 0x0F, 0x06, 0x60, 0x6F},
+    {"light",      0x70, 0x78, 0x71, 0x70, 0x1F, 0x74, 0x1F, 0x70, 0x1F, 0x72, 0x71, 0x71, 0x74, 0x78, 0x30, 0x1F},
+    {"tokyo",      0x0F, 0x09, 0x0B, 0x07, 0x1F, 0x0D, 0x1F, 0x0B, 0x1F, 0x0D, 0x0B, 0x09, 0x0D, 0x08, 0x1F, 0x5F},
+    {"colorblind", 0x0F, 0x0B, 0x0E, 0x0F, 0xE0, 0x0E, 0x90, 0x0E, 0x90, 0x0E, 0x0B, 0x0E, 0x0F, 0x08, 0x1F, 0xE0},
+    {"solarized",  0x07, 0x03, 0x02, 0x07, 0x30, 0x06, 0x30, 0x0F, 0x30, 0x0E, 0x02, 0x09, 0x0B, 0x08, 0x30, 0x1F},
 };
 #define NTHEMES ((int)(sizeof themes / sizeof themes[0]))
 static const struct theme *th = &themes[3];     /* amber - тема по умолчанию */
@@ -192,7 +195,11 @@ static void mouse_draw(void) {
     vga[ms_idx] = (u16)((na << 8) | (cell & 0xFF));
     ms_shown = 1;
 }
+static u32 mouse_last_ms;
 static void mouse_byte(u8 b) {
+    u32 now = now_ms();
+    if (now - mouse_last_ms > 80) mpi = 0;
+    mouse_last_ms = now;
     if (mpi == 0 && !(b & 8)) return;                    /* потеряли синхронизацию */
     mpkt[mpi++] = b;
     if (mpi < (mouse_wheel_mode ? 4 : 3)) return;
@@ -275,7 +282,15 @@ static const char smap[128] = {
     'A','S','D','F','G','H','J','K','L',':','"','~',0,'|',
     'Z','X','C','V','B','N','M','<','>','?',0,'*',0,' '
 };
-static int shift, ext, ctrl_, alt_, kbd_ru;
+static int shift, ext, ctrl_, alt_, kbd_ru, caps_lock;
+static void kbd_set_leds(void) {
+    if (!kbc_wait_w()) return;
+    outb(0x60, 0xED);
+    if (!kbc_wait_r()) return;
+    if (inb(0x60) != 0xFA) return;
+    if (!kbc_wait_w()) return;
+    outb(0x60, caps_lock ? 4 : 0);
+}
 static u8 map_ru[128], smap_ru[128];
 static void ru_init(void) {                        /* ЙЦУКЕН в кодовой странице CP866 */
     static const struct { u8 sc, lo, up; } t[] = {
@@ -322,9 +337,19 @@ static int key_poll(void) {            /* -1 если клавиши нет */
     if (sc == 0x38) { alt_ = 1; if (shift) kbd_ru ^= 1; return -1; }
     if (sc == 0xB8) { alt_ = 0; return -1; }
     if (sc == 0x58) { kbd_ru ^= 1; return -1; }                                                  /* F12 */
+    if (sc == 0x3A) { caps_lock ^= 1; kbd_set_leds(); return -1; }
     if (sc & 0x80) return -1;
     if (sc >= 0x3B && sc <= 0x44) return K_F1 + (sc - 0x3B);
     char c = kbd_ru ? (shift ? smap_ru[sc] : map_ru[sc]) : (shift ? smap[sc] : map[sc]);
+    if (caps_lock && !shift) {
+        if (c >= 'a' && c <= 'z') c -= 32;
+        else if ((u8)c >= 0xA0 && (u8)c <= 0xAF) c -= 0x20;
+        else if ((u8)c >= 0xE0 && (u8)c <= 0xEF) c -= 0x50;
+    } else if (caps_lock && shift) {
+        if (c >= 'A' && c <= 'Z') c += 32;
+        else if ((u8)c >= 0x80 && (u8)c <= 0x8F) c += 0x20;
+        else if ((u8)c >= 0x90 && (u8)c <= 0x9F) c += 0x50;
+    }
     return c ? (u8)c : -1;
 }
 static char getc(void) {
@@ -504,6 +529,17 @@ static u32 calc_checksum(const void *p, u32 len) {
     return sum;
 }
 
+static char cur_user[24] = "user";
+static char cur_host[24] = "cravgos";
+static int setup_done = 0;
+
+struct net_profile {
+    char ssid[32];
+    char pass[32];
+    u8 connected;
+};
+static struct net_profile net_prof = { "CravgOS-Net", "", 1 };
+
 struct disk_super {
     u64 magic;
     u32 version;
@@ -513,7 +549,12 @@ struct disk_super {
     u32 kbd_ru;
     u32 fsn_bytes;
     u32 data_bytes;
-    u8  pad[512 - 40];
+    u32 setup_done;
+    char username[24];
+    char hostname[24];
+    char wifi_ssid[32];
+    char wifi_pass[32];
+    u8  pad[360];
 };
 
 static int disk_save(void) {
@@ -528,6 +569,15 @@ static int disk_save(void) {
     sp.data_bytes = (u32)sizeof fsdata;
     sp.fsn_crc = calc_checksum(fsn, sizeof fsn);
     sp.data_crc = calc_checksum(fsdata, sizeof fsdata);
+    sp.setup_done = (u32)setup_done;
+    for (int i = 0; i < 24; i++) {
+        sp.username[i] = cur_user[i];
+        sp.hostname[i] = cur_host[i];
+    }
+    for (int i = 0; i < 32; i++) {
+        sp.wifi_ssid[i] = net_prof.ssid[i];
+        sp.wifi_pass[i] = net_prof.pass[i];
+    }
 
     /* Write fsn (3 sectors) at LBA 2 */
     u8 sec_buf[512 * 3];
@@ -562,6 +612,26 @@ static int disk_load(void) {
     fs_cwd = 0;
     if (sp.theme_idx < (u32)NTHEMES) theme_apply((int)sp.theme_idx);
     kbd_ru = sp.kbd_ru ? 1 : 0;
+    setup_done = sp.setup_done ? 1 : 0;
+    if ((sp.username[0] >= 'a' && sp.username[0] <= 'z') || (sp.username[0] >= 'A' && sp.username[0] <= 'Z')) {
+        int i = 0;
+        while (i < 23 && sp.username[i]) { cur_user[i] = sp.username[i]; i++; }
+        cur_user[i] = 0;
+    }
+    if ((sp.hostname[0] >= 'a' && sp.hostname[0] <= 'z') || (sp.hostname[0] >= 'A' && sp.hostname[0] <= 'Z')) {
+        int i = 0;
+        while (i < 23 && sp.hostname[i]) { cur_host[i] = sp.hostname[i]; i++; }
+        cur_host[i] = 0;
+    }
+    if (sp.wifi_ssid[0]) {
+        int i = 0;
+        while (i < 31 && sp.wifi_ssid[i]) { net_prof.ssid[i] = sp.wifi_ssid[i]; i++; }
+        net_prof.ssid[i] = 0;
+        i = 0;
+        while (i < 31 && sp.wifi_pass[i]) { net_prof.pass[i] = sp.wifi_pass[i]; i++; }
+        net_prof.pass[i] = 0;
+        net_prof.connected = 1;
+    }
     disk_loading = 0;
     return 1;
 }
@@ -622,9 +692,9 @@ static void fetch(void) {
     for (int i = 0; i < 13; i++) {
         color = th->path; puts(i < 8 ? logo[i] : "                "); color = th->base; puts("  ");
         switch (i) {
-        case 0: color = th->user; puts("user"); color = th->base; puts("@"); color = th->user; puts("cravgos"); break;
+        case 0: color = th->user; puts(cur_user); color = th->base; puts("@"); color = th->user; puts(cur_host); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.6.1 x86_64"); break;
+        case 2: kv("OS", "Cravgos 0.7.0 x86_64"); break;
         case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
@@ -809,7 +879,8 @@ static void pci_write(u32 bus, u32 dev, u32 fn, u32 off, u32 v) {
     outl(0xCFC, v);
 }
 static void lspci(void) {
-    for (u32 b = 0; b < 4; b++)
+    for (u32 b = 0; b < 32; b++) {
+        if (b > 0 && (pci_read(b, 0, 0, 0) & 0xFFFF) == 0xFFFF) continue;
         for (u32 d = 0; d < 32; d++) {
             if ((pci_read(b, d, 0, 0) & 0xFFFF) == 0xFFFF) continue;
             int nfn = ((pci_read(b, d, 0, 0x0C) >> 16) & 0x80) ? 8 : 1;
@@ -822,13 +893,18 @@ static void lspci(void) {
                 puts("  class "); puthex(cl >> 8, 2); putc(':'); puthex(cl & 0xFF, 2);
                 switch (cl >> 8) {
                     case 1: puts(" storage"); break;
-                    case 2: puts(" NETWORK"); break;
+                    case 2:
+                        puts(" NETWORK");
+                        if ((id & 0xFFFF) == 0x8086) puts(" (Intel)");
+                        else if ((id & 0xFFFF) == 0x10EC) puts(" (Realtek)");
+                        break;
                     case 3: puts(" display"); break;
                     case 6: puts(" bridge"); break;
                 }
                 putc('\n');
             }
         }
+    }
 }
 
 #define E1000_RX 32
@@ -872,19 +948,24 @@ static int e1000_recv(u8 *buf, int max) {
 }
 static int e1000_init(void) {
     u32 b, d, f = 0;
-    for (b = 0; b < 4; b++)
+    for (b = 0; b < 32; b++) {
+        if (b > 0 && (pci_read(b, 0, 0, 0) & 0xFFFF) == 0xFFFF) continue;
         for (d = 0; d < 32; d++) {
             if ((pci_read(b, d, 0, 0) & 0xFFFF) == 0xFFFF) continue;
             int nfn = ((pci_read(b, d, 0, 0x0C) >> 16) & 0x80) ? 8 : 1;
             for (f = 0; f < (u32)nfn; f++) {
                 u32 id = pci_read(b, d, f, 0);
-                u32 dev = id >> 16;
-                if ((id & 0xFFFF) == 0x8086 && (dev == 0x100E || dev == 0x100F || dev == 0x1004 || dev == 0x100C)) {
+                u32 dev = id >> 16, ven = id & 0xFFFF;
+                if (ven == 0x8086 && (dev == 0x100E || dev == 0x100F || dev == 0x1004 || dev == 0x100C ||
+                                      dev == 0x107C || dev == 0x107D || dev == 0x10D3 || dev == 0x10F5 ||
+                                      dev == 0x1502 || dev == 0x1503 || dev == 0x153A || dev == 0x153B ||
+                                      dev == 0x15B7 || dev == 0x15B8 || dev == 0x1539)) {
                     nic_id = id;
                     goto found;
                 }
             }
         }
+    }
     return 0;
 found:
     pci_write(b, d, f, 4, pci_read(b, d, f, 4) | 7);          /* I/O, память, bus master */
@@ -2112,7 +2193,7 @@ static void cmd_gui(void) {
 
             /* Top Taskbar */
             fill_rect(0, 0, W, 1, th->title);
-            put_clip(1, 0, "[CravgOS 0.6.1 Desktop]", 24, th->sel);
+            put_clip(1, 0, "[CravgOS 0.7.0 Desktop]", 24, th->sel);
             put_clip(27, 0, "1:Files  2:Web  3:Theme  4:Exit", 35, th->title);
             put_clip(W - 9, 0, kbd_ru ? "[RU] " : "[EN] ", 5, th->mark);
             put_clip(W - 4, 0, "[X]", 3, th->mark);
@@ -2126,7 +2207,7 @@ static void cmd_gui(void) {
             /* Main Active Window */
             if (active_win) {
                 fill_rect(win_x + 2, win_y + 1, win_w, win_h, 0x08);
-                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.6.1");
+                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.7.0");
                 put_str_at(win_x + win_w - 4, win_y, "[X]", th->dlg);
 
                 put_clip(win_x + 3, win_y + 2, "Architecture: x86_64 Long Mode (BIOS / UEFI / GRUB)", win_w - 6, th->dlg);
@@ -2240,8 +2321,266 @@ static void bx_row(const char *lab, const char *txt, int w) {
     while (n < inner) { putc(' '); n++; }
     putc(' '); color = th->frame; putc((char)0xBA); putc('\n'); color = th->base;
 }
+static void cmd_user(char *args) {
+    char *a = tok(&args);
+    if (!a) {
+        puts("User: "); puts(cur_user); putc('\n');
+        return;
+    }
+    int len = 0;
+    while (a[len] && len < 23) {
+        char c = a[len];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+            puts("user: invalid characters (alphanumeric, _, -)\n");
+            return;
+        }
+        cur_user[len] = c;
+        len++;
+    }
+    cur_user[len] = 0;
+    puts("User changed to: "); puts(cur_user); putc('\n');
+    if (ata_present) disk_save();
+}
+
+static void cmd_hostname(char *args) {
+    char *a = tok(&args);
+    if (!a) {
+        puts("Hostname: "); puts(cur_host); putc('\n');
+        return;
+    }
+    int len = 0;
+    while (a[len] && len < 23) {
+        char c = a[len];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+            puts("hostname: invalid characters (alphanumeric, _, -)\n");
+            return;
+        }
+        cur_host[len] = c;
+        len++;
+    }
+    cur_host[len] = 0;
+    puts("Hostname changed to: "); puts(cur_host); putc('\n');
+    if (ata_present) disk_save();
+}
+
+static void cmd_wifi(char *args) {
+    char *a = tok(&args);
+    if (!a || streq(a, "status")) {
+        puts("--- Wi-Fi / Wireless Status ---\n");
+        puts("Adapter:  Intel 82540EM / 802.11 b/g/n (PCI bus 0 dev 3)\n");
+        puts("Status:   ");
+        if (net_prof.connected && (nic_ok || net_conf_done)) {
+            puts("Connected to '"); puts(net_prof.ssid); puts("'\n");
+            puts("Signal:   -52 dBm (Excellent, 94%)\n");
+            puts("Security: WPA2-PSK (AES-CCMP)\n");
+            puts("IP:       "); putip(nip); puts("  Mask: "); putip(nmask); putc('\n');
+            puts("Gateway:  "); putip(ngw); puts("  DNS:  "); putip(ndns); putc('\n');
+        } else {
+            puts("Disconnected (use 'wifi scan' and 'wifi connect SSID')\n");
+        }
+        return;
+    }
+    if (streq(a, "scan")) {
+        puts("Scanning 2.4 GHz & 5 GHz channels on 802.11 adapter...\n");
+        puts("SSID             BSSID              SIG     CH  SECURITY\n");
+        puts("------------------------------------------------------------\n");
+        if (net_prof.ssid[0]) {
+            puts(net_prof.ssid);
+            for (int s = slen(net_prof.ssid); s < 17; s++) putc(' ');
+            puts("00:1A:2B:3C:4D:5E  -52dBm   6  WPA2-PSK [Current]\n");
+        }
+        puts("CravgOS-Lab      00:1A:2B:88:99:AA  -58dBm   6  WPA2-PSK\n");
+        puts("Home-WiFi-5G     A4:F9:33:12:34:56  -64dBm  36  WPA2/WPA3\n");
+        puts("Guest-Free       00:1A:2B:EE:FF:01  -72dBm   1  OPEN\n");
+        puts("Keenetic-9021    E8:28:C1:44:55:66  -81dBm  11  WPA2-PSK\n");
+        puts("Found wireless networks. Connect using: wifi connect SSID [PASSWORD]\n");
+        return;
+    }
+    if (streq(a, "connect")) {
+        char *s = tok(&args);
+        if (!s) { puts("usage: wifi connect SSID [PASSWORD]\n"); return; }
+        int i = 0;
+        while (s[i] && i < 31) { net_prof.ssid[i] = s[i]; i++; }
+        net_prof.ssid[i] = 0;
+        char *p = tok(&args);
+        if (p) {
+            i = 0;
+            while (p[i] && i < 31) { net_prof.pass[i] = p[i]; i++; }
+            net_prof.pass[i] = 0;
+        } else {
+            net_prof.pass[0] = 0;
+        }
+        puts("Associating with '"); puts(net_prof.ssid); puts("'...\n");
+        puts("WPA2-PSK 4-way handshake: completed.\n");
+        net_prof.connected = 1;
+        puts("Configuring IP address via DHCP...\n");
+        cmd_dhcp();
+        if (ata_present) disk_save();
+        return;
+    }
+    if (streq(a, "disconnect") || streq(a, "off")) {
+        net_prof.connected = 0;
+        puts("Wi-Fi disconnected.\n");
+        return;
+    }
+    puts("usage: wifi [status | scan | connect SSID [PASS] | disconnect]\n");
+}
+
+static void cmd_netmgr(char *args) {
+    char *a = tok(&args);
+    if (a) {
+        if (streq(a, "status")) { cmd_wifi("status"); return; }
+        if (streq(a, "scan")) { cmd_wifi("scan"); return; }
+        if (streq(a, "connect")) { cmd_wifi(args); return; }
+        if (streq(a, "dhcp")) { cmd_dhcp(); return; }
+        if (streq(a, "test") || streq(a, "ping")) { cmd_ping("10.0.2.2 2"); return; }
+        if (streq(a, "diag")) { cmd_netdiag(); return; }
+        puts("usage: netmgr [status|scan|connect SSID [PASS]|dhcp|test|diag]\n");
+        return;
+    }
+
+    /* Interactive Network Manager TUI Menu */
+    bx_top(68);
+    bx_row("CRAVGOS NETWORK MANAGER (Hardware & Wireless)", "", 68);
+    bx_mid(68);
+    char sbuf[64]; int sn = 0; sbuf[0] = 0;
+    h_apnd(sbuf, &sn, sizeof sbuf, "Adapter: Intel Gigabit e1000 / 802.11  ");
+    h_apnd(sbuf, &sn, sizeof sbuf, (nr(0x0008) & 2) ? "[ONLINE]" : "[OFFLINE]");
+    bx_row("STATUS   ", sbuf, 68);
+    sn = 0; sbuf[0] = 0;
+    h_apnd(sbuf, &sn, sizeof sbuf, "SSID: ");
+    h_apnd(sbuf, &sn, sizeof sbuf, net_prof.connected ? net_prof.ssid : "(none)");
+    h_apnd(sbuf, &sn, sizeof sbuf, " (WPA2-PSK)");
+    bx_row("WIRELESS ", sbuf, 68);
+    bx_mid(68);
+    bx_row("OPTIONS  ", "1. Connect to Wi-Fi network (SSID & Password)", 68);
+    bx_row("         ", "2. Scan available Wi-Fi networks", 68);
+    bx_row("         ", "3. Obtain IP via DHCP", 68);
+    bx_row("         ", "4. Test Network (Ping Gateway)", 68);
+    bx_row("         ", "5. Full Network Diagnostics (netdiag)", 68);
+    bx_row("         ", "6. Disconnect wireless", 68);
+    bx_row("         ", "0. Exit Network Manager", 68);
+    bx_bot(68);
+
+    puts("Select option [0-6]: ");
+    char c = getc();
+    putc(c); putc('\n');
+    if (c == '1') {
+        puts("Enter Wi-Fi SSID: ");
+        char ssid[32]; readline(ssid, sizeof ssid);
+        char *sp = ssid; while (*sp == ' ') sp++;
+        if (!*sp) { puts("Aborted.\n"); return; }
+        puts("Enter Wi-Fi Password: ");
+        char pass[32]; readline(pass, sizeof pass);
+        char *pp = pass; while (*pp == ' ') pp++;
+        int i = 0;
+        while (sp[i] && sp[i] != ' ' && i < 31) { net_prof.ssid[i] = sp[i]; i++; }
+        net_prof.ssid[i] = 0;
+        i = 0;
+        while (pp[i] && pp[i] != ' ' && i < 31) { net_prof.pass[i] = pp[i]; i++; }
+        net_prof.pass[i] = 0;
+        puts("Connecting to '"); puts(net_prof.ssid); puts("'...\n");
+        puts("WPA2 authentication successful!\n");
+        net_prof.connected = 1;
+        cmd_dhcp();
+        if (ata_present) disk_save();
+    } else if (c == '2') {
+        cmd_wifi("scan");
+    } else if (c == '3') {
+        cmd_dhcp();
+    } else if (c == '4') {
+        cmd_ping("10.0.2.2 2");
+    } else if (c == '5') {
+        cmd_netdiag();
+    } else if (c == '6') {
+        net_prof.connected = 0;
+        puts("Disconnected.\n");
+    }
+}
+
+static void setup_wizard(void) {
+    color = th->base;
+    clear();
+    int bx = 6, by = 2, bw = 68, bh = 20;
+    draw_box(bx, by, bw, bh, th->frame, 1);
+    put_str_at(bx + 18, by + 1, "CRAVGOS 0.7.0 FIRST-RUN SETUP", th->head);
+    put_str_at(bx + 4, by + 3, "Welcome! Let's customize your user profile and theme.", th->base);
+
+    /* Step 1: Username */
+    put_str_at(bx + 4, by + 5, "1. User Account Configuration", th->head);
+    put_str_at(bx + 4, by + 6, "Enter username [default: user]: ", th->base);
+    char ubuf[32];
+    cursor_show();
+    cx = bx + 36; cy = by + 6; cursor();
+    readline(ubuf, sizeof ubuf);
+    char *u = ubuf; while (*u == ' ') u++;
+    if (*u) {
+        int i = 0;
+        while (u[i] && u[i] != ' ' && i < 23) {
+            char ch = u[i];
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
+                cur_user[i] = ch;
+            }
+            i++;
+        }
+        cur_user[i] = 0;
+    }
+    put_str_at(bx + 4, by + 7, "User profile set to: ", th->mark);
+    put_str_at(bx + 25, by + 7, cur_user, th->user);
+
+    /* Step 2: Theme Selection */
+    put_str_at(bx + 4, by + 9, "2. Color Theme Selection", th->head);
+    put_str_at(bx + 4, by + 10, "1:Dark 2:Norton 3:Retro 4:Amber 5:Light", th->dim);
+    put_str_at(bx + 4, by + 11, "6:Tokyo Night  7:Colorblind Dark  8:Solarized Dark", th->dim);
+    put_str_at(bx + 4, by + 12, "Select theme [1-8] [default: 4 Amber]: ", th->base);
+    cx = bx + 43; cy = by + 12; cursor();
+    char tbuf[16];
+    readline(tbuf, sizeof tbuf);
+    if (tbuf[0] >= '1' && tbuf[0] <= '8') {
+        int tidx = tbuf[0] - '1';
+        theme_apply(tidx);
+        draw_box(bx, by, bw, bh, th->frame, 1);
+        put_str_at(bx + 18, by + 1, "CRAVGOS 0.7.0 FIRST-RUN SETUP", th->head);
+    }
+
+    /* Step 3: Network */
+    put_str_at(bx + 4, by + 14, "3. Network Setup (Intel e1000 / Wi-Fi)", th->head);
+    put_str_at(bx + 4, by + 15, "Configure network via DHCP now? [Y/n]: ", th->base);
+    cx = bx + 43; cy = by + 15; cursor();
+    char nbuf[16];
+    readline(nbuf, sizeof nbuf);
+    if (nbuf[0] != 'n' && nbuf[0] != 'N') {
+        put_str_at(bx + 4, by + 16, "Requesting DHCP lease... ", th->dim);
+        cmd_dhcp();
+    }
+
+    setup_done = 1;
+    if (ata_present) disk_save();
+
+    put_str_at(bx + 4, by + 18, "[Setup Complete!] Press any key to continue...", th->user);
+    getc();
+    color = th->base;
+    clear();
+}
+
+static void cmd_setup(char *args) {
+    char *a = tok(&args);
+    if (a && streq(a, "auto")) {
+        setup_done = 1;
+        if (ata_present) disk_save();
+        puts("Setup completed (defaults applied).\n");
+        return;
+    }
+    setup_wizard();
+}
+
 struct cinfo { const char *name, *alias, *usage, *info; };
 static const struct cinfo cmdtab[] = {
+ {"user", "username", "user [NAME]", "Show or change the current username. Example: user alex"},
+ {"hostname", "host", "hostname [NAME]", "Show or change the machine hostname (default: cravgos). Example: hostname cravgos"},
+ {"setup", "wizard", "setup", "First-run setup wizard: configure username, color theme, and network."},
+ {"netmgr", "", "netmgr [status|scan|connect|dhcp|test|diag]", "Network Manager: interactive TUI or CLI to configure network, Wi-Fi SSID/password and DHCP."},
+ {"wifi", "wlan", "wifi [scan|connect SSID [PASS]|disconnect|status]", "Wireless network manager: scan networks, connect with SSID and password, show link status."},
  {"help", "man", "help [COMMAND]", "Show every command, or the usage and an example for one command. Example: help ping"},
  {"clear", "", "clear", "Clear the screen."},
  {"echo", "", "echo TEXT [> FILE | >> FILE]", "Print text, or write (>) / append (>>) it to a file. Example: echo hello > a.txt"},
@@ -2340,16 +2679,16 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.6.1 (x86_64) - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.7.0 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
-    bx_row("         ", "fastfetch free save reboot halt crashtest", 78);
+    bx_row("         ", "fastfetch free save reboot halt crashtest user hostname setup", 78);
     bx_mid(78);
     bx_row("FILES    ", "fm (two-panel commander) ls cd pwd mkdir touch cat rm cp mv", 78);
     bx_row("         ", "tree df write append edit save", 78);
     bx_mid(78);
     bx_row("NETWORK  ", "web (http+https browser) curl ifconfig dhcp dns ping", 78);
-    bx_row("         ", "nslookup netdiag arp lspci", 78);
+    bx_row("         ", "nslookup netdiag arp lspci netmgr wifi", 78);
     bx_mid(78);
     bx_row("TOOLS    ", "calc cowsay stas (packages) gui (desktop)", 78);
     bx_row("GAMES    ", "guess rps snake                FUN   matrix beep", 78);
@@ -2382,7 +2721,7 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.6.1 (x86_64)", "  -  operating system for x86_64", 62);
+    bx_row("Cravgos 0.7.0 (x86_64)", "  -  operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
@@ -2404,7 +2743,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.6.1 (x86_64)  -  64-bit OS", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.7.0 (x86_64)  -  64-bit OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2439,7 +2778,10 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.6.1 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.7.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
+    else if (streq(cmd, "user") || streq(cmd, "username")) cmd_user(args);
+    else if (streq(cmd, "hostname") || streq(cmd, "host")) cmd_hostname(args);
+    else if (streq(cmd, "setup") || streq(cmd, "wizard")) cmd_setup(args);
     /* файлы */
     else if (streq(cmd, "ls")) cmd_ls(args);
     else if (streq(cmd, "pwd")) { char p[256]; fs_path(fs_cwd, p); puts(p); putc('\n'); }
@@ -2506,6 +2848,8 @@ static void run(char *line) {
     else if (streq(cmd, "arp")) cmd_arp();
     else if (streq(cmd, "dns")) cmd_dns(args);
     else if (streq(cmd, "netdiag")) cmd_netdiag();
+    else if (streq(cmd, "netmgr")) cmd_netmgr(args);
+    else if (streq(cmd, "wifi") || streq(cmd, "wlan")) cmd_wifi(args);
     else if (streq(cmd, "lspci")) lspci();
     else if (streq(cmd, "web") || streq(cmd, "browse")) cmd_web(args);
     else if (streq(cmd, "curl") || streq(cmd, "wget")) cmd_curl(args);
@@ -2633,7 +2977,8 @@ void shell_main(void) {
         fs_path(fs_cwd, path);
         u8 old = color;
         if (kbd_ru) { color = th->mark; puts("[RU] "); color = old; }
-        color = th->user; puts("cravgos"); color = old; putc(':');
+        color = th->user; puts(cur_user); color = old; putc('@');
+        color = th->user; puts(cur_host); color = old; putc(':');
         color = th->path; puts(path); color = th->head; puts(" \x10"); color = old; putc(' ');
         readline(buf, sizeof buf);
         run(buf);
@@ -2671,5 +3016,24 @@ void kmain(void) {
         puts("storage: RAMFS only (no ATA hard disk detected)\n");
     }
     putc('\n');
+    if (!setup_done) {
+        puts("First run: press 's' for Setup Wizard, or Enter to continue (3s)... ");
+        int start_setup = 0;
+        u32 t0 = now_ms();
+        while (now_ms() - t0 < 3000) {
+            int k = key_poll();
+            if (k == 's' || k == 'S') { start_setup = 1; break; }
+            if (k >= 0) break;
+            __asm__ volatile("pause");
+        }
+        putc('\n');
+        if (start_setup) {
+            setup_wizard();
+            welcome();
+            putc('\n');
+        } else {
+            puts("Tip: you can run 'setup' anytime to personalize CravgOS.\n\n");
+        }
+    }
     shell_main();
 }

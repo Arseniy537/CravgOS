@@ -1,3 +1,7 @@
+bench aef6d32dc1ad8bf1a1c902ac8baf446b1ef31690f2da238826d547f7db584ec3 402 CPU performance benchmark in stas
+dice b13b8850fb694b72cca438ccae1ec3d6193c780c1e40fa52edb988d41874a746 846 Roll the dice against the computer!
 fact a719ae5713ec3166dd71a0818b8676d1da21502372f570b8a749159928c7713e 288 Calculate factorial n!
 guess e3e3986fbf35f0230b2f4754d5b5bac3dbd044e1deda37eb190598e5785ae60b 384 Guess the number (1-100)
+math e0ba7b9033a7b74d1d15bdd766a8ba5542a9281d0ded9119cb4ed99f5b12e1d5 1183 Math utility: Power, Sum, GCD, Prime
 nim 8bd46690baf6d7cd6887e3e9aa9027569d5e80caf256e638c719c25aaf346283 587 game: take 1-3 sticks, whoever takes the LAST stick loses
+tower 0b2bf56a2dedddd4b7df097f0133b88233b76928a3e7e767ec6ac572f664dcf1 1623 Dungeon of Cravgos text adventure

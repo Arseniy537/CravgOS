@@ -1,0 +1,45 @@
+# dice - Roll the dice against the computer!
+say
+say === DICE DUEL ===
+say First to reach 3 points wins!
+let p = 0
+let c = 0
+:round
+say
+say Score: You $p - Computer $c
+put Press 1 to roll dice (0 to quit):$_
+ask x
+if x = 0 goto bye
+if x != 1 goto round
+let a = rnd 6
+let b = rnd 6
+let y = a + b
+say You rolled $a and $b (total: $y)
+let d = rnd 6
+let e = rnd 6
+let z = d + e
+say Computer rolled $d and $e (total: $z)
+if y > z goto win_round
+if z > y goto lose_round
+say It is a tie!
+goto round
+:win_round
+say You win this round!
+let p = p + 1
+if p >= 3 goto game_win
+goto round
+:lose_round
+say Computer wins this round!
+let c = c + 1
+if c >= 3 goto game_lose
+goto round
+:game_win
+say
+say *** CONGRATULATIONS! You won the match $p-$c! ***
+end
+:game_lose
+say
+say Computer won the match $c-$p. Better luck next time!
+end
+:bye
+say Thanks for playing!

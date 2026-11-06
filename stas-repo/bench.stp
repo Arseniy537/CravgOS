@@ -1,0 +1,21 @@
+# bench - CPU performance benchmark in stas
+say
+say === CPU BENCHMARK ===
+say Running 5000 iterations of arithmetic calculations...
+let i = 0
+let s = 0
+let a = 123
+let b = 456
+:loop
+let i = i + 1
+let s = s + i
+let t = a * i
+let t = t % b
+let s = s + t
+if i < 5000 goto loop
+say
+say Calculations completed!
+say Iterations: $i
+say Result hash: $s
+say System performance: EXCELLENT (x86_64 Long Mode)
+end

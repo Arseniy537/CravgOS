@@ -179,7 +179,7 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_T
     out->SetAttribute(out, 0x0E); /* Желтый / Amber */
 
     out->OutputString(out, u"=================================================================\r\n");
-    out->OutputString(out, u"       CRAVGOS 0.6.1 (x86_64) - UEFI 64-BIT BOOTLOADER           \r\n");
+    out->OutputString(out, u"       CRAVGOS 0.7.0 (x86_64) - UEFI 64-BIT BOOTLOADER           \r\n");
     out->OutputString(out, u"=================================================================\r\n\r\n");
 
     out->SetAttribute(out, 0x0F); /* Белый */

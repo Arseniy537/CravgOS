@@ -4,35 +4,34 @@
 
 ## 1. Назначение и архитектура
 - 64-битная x86_64 автономная операционная система (Long Mode / IA-32e) без внешних библиотек (freestanding C). [ФАКТ]
-- Поддерживает текстовую консоль 80x25, темы оформления, графический рабочий стол (`gui`), двухпанельный файловый проводник `fm`, полноэкранный редактор `edit`, веб-браузер `web` (HTTP/HTTPS, HTML, рендеринг картинок 16 цветов VGA), пакетный менеджер `stas`, сохранение состояния на ATA жесткий диск. [ФАКТ]
-- Ядро и оболочка: монолитный `kernel.c` (~2670 строк) + заголовочные модули (`net.h`, `http.h`, `stas.h`, `fs.h`, `tls.h`, `crypto.h`, `html.h`, `image.h`, `cyrfont.h`). [ФАКТ]
-- Текущая версия: **0.6.1 (x86_64)**. Собраны и протестированы артефакты `cravgos.iso` (гибридный BIOS + UEFI El Torito), `bootx64.efi` (UEFI GOP), `cravgos.bin` (GRUB Multiboot 1 & 2). [ФАКТ]
+- Поддерживает текстовую консоль 80x25, темы оформления, графический рабочий стол (`gui`), мастер первого запуска (`setup`), сетевой менеджер (`netmgr`, `wifi`), систему учётных записей и хостов (`user`, `hostname`), двухпанельный файловый проводник `fm`, полноэкранный редактор `edit`, веб-браузер `web` (HTTP/HTTPS, HTML, рендеринг картинок 16 цветов VGA), пакетный менеджер `stas`, сохранение состояния на ATA жесткий диск. [ФАКТ]
+- Ядро и оболочка: монолитный `kernel.c` (~3000 строк) + заголовочные модули (`net.h`, `http.h`, `stas.h`, `fs.h`, `tls.h`, `crypto.h`, `html.h`, `image.h`, `cyrfont.h`). [ФАКТ]
+- Текущая версия: **0.7.0 (x86_64)**. Собраны и протестированы артефакты `cravgos.iso` (гибридный BIOS + UEFI El Torito), `bootx64.efi` (UEFI GOP), `cravgos.bin` (GRUB Multiboot 1 & 2). [ФАКТ]
 
-## 2. Загрузка и целевая среда (v0.6.1)
+## 2. Загрузка и целевая среда (v0.7.0)
 - **Гибридный ISO (`mkiso.py`, `boot_iso.s`, `boot_efi.c`)**:
   - **BIOS**: Real Mode 16-bit на 0x7C00 -> 32-bit Protected Mode -> 64-bit Long Mode через 4-уровневые таблицы страниц PML4 (2 МБ Huge Pages на первые 4 ГБ физической памяти).
   - **UEFI**: Загрузочный PE32+ бинарь `\EFI\BOOT\BOOTX64.EFI` упакован в FAT12 образ `efiboot.img`, подключён в El Torito Section Header (`Platform ID 0xEF`). Запрашивает протокол GOP, определяет разрешение и линейный фреймбуфер.
   - **GRUB Multiboot 1 & 2 (`boot.s`, `linker.ld`)**: бинарный образ `cravgos.bin` содержит оба заголовка Multiboot 1 (`0x1BADB002`) и Multiboot 2 (`0xE85250D6`), настраивает PML4, GDT64, шлюзы IDT ISR и переходит в ядро.
 - **Раскладка памяти**:
   - `linker_iso.ld` и `linker.ld`: секция `.bigbss` на `0x200000` (`NOLOAD`) под сетевые буферы, кольца дескрипторов e1000, буферы веб-страниц и TLS. Символы `__bss_start`, `__bss_end`, `__bigbss_start`, `__bigbss_end` синхронизированы.
-- **Целевая среда**: VirtualBox (тип Other 64-bit, адаптер Intel PRO/1000 MT Desktop, NAT, Primary Master ATA HDD 2048 MiB), QEMU x86_64.
+- **Целевая среда**: VirtualBox (тип Other 64-bit, адаптер Intel PRO/1000 MT Desktop, NAT, Primary Master ATA HDD 2048 MiB), QEMU x86_64, реальное x86_64 оборудование.
 
 ## 3. Файлы репозитория
 | Файл | Назначение |
 |---|---|
-| `kernel.c` | Ядро, драйверы (VGA/PS2/PIT/CMOS/ATA/e1000), CLI, графический десктоп `gui` (`struct fb_info`), `fm`, `web`, `edit`, `cmdtab[]` |
+| `kernel.c` | Ядро, драйверы (VGA/PS2 CapsLock+LED/PIT/CMOS/ATA/e1000 PCI 32 buses), CLI, `setup`, `netmgr`, `wifi`, `user`, `hostname`, `gui` desktop (`struct fb_info`), `fm`, `web`, `edit`, `cmdtab[]` |
 | `boot_iso.s` | BIOS El Torito загрузчик: 16-bit -> 32-bit -> 64-bit Long Mode + PML4 + IDT |
-| `boot_efi.c` | 64-битное приложение UEFI GOP (`BOOTX64.EFI`) |
+| `boot_efi.c` | 64-битное приложение UEFI GOP (`BOOTX64.EFI v0.7.0`) |
 | `boot.s` | Загрузчик GRUB Multiboot 1 & 2 + 64-bit IDT ISR stubs |
 | `linker_iso.ld` | Скрипт линковки ISO (точка входа 0x7C00, секция `.bigbss`) |
 | `linker.ld` | Скрипт линковки GRUB Multiboot (`cravgos.bin`) |
 | `mkiso.py` | Генератор гибридного ISO (BIOS El Torito + FAT12 EFI Boot Image) |
 | `Makefile` | Сборка `bootx64.efi`, `cravgos.iso`, `cravgos.bin`, `test`, `clean` под Windows и Linux |
 | `net.h` | Сетевой стек: ARP, IPv4, ICMP, UDP, DHCP, DNS (6 серверов fallback), TCP |
-| `http.h` | HTTP/1.0, моментальный Chunked, NAT mapping `127.0.0.1` -> `10.0.2.2`, DoH fallback |
-| `stas.h` | Пакетный менеджер `stas` с нормализацией CRLF, пресетами `host`/`default`/`offline` и встроенными офлайн-пакетами |
-| `stas-repo/` | Репозиторий пакетов (`index.txt`, `fact.stp`, `guess.stp`, `nim.stp`) |
-| `tools/stas_mkrepo.py` | Генератор `index.txt` с фиксацией LF line endings |
+| `http.h` | HTTP/1.0, моментальный Chunked, User-Agent `Cravgos/0.7.0`, NAT mapping `127.0.0.1` -> `10.0.2.2`, DoH fallback |
+| `stas.h` | Пакетный менеджер `stas` с каталогом из 7 пакетов (`bench`, `dice`, `fact`, `guess`, `math`, `nim`, `tower`), офлайн-режимом и нормализацией |
+| `stas-repo/` | Репозиторий пакетов (`index.txt`, `bench.stp`, `dice.stp`, `fact.stp`, `guess.stp`, `math.stp`, `nim.stp`, `tower.stp`) |
 | `fs.h` | RAMFS: 64 узла × 2048 байт, синхронизация с диском ATA (`save`) |
 | `html.h` | HTML-парсер под 80 колонок, декодирование кодировок UTF-8/CP1251/KOI8-R в CP866 |
 | `image.h` | Декодеры PNG, JPEG, GIF, 16-цветный дизеринг по Байеру, псевдографика 80x50 |
@@ -40,7 +39,7 @@
 | `tls.h`, `crypto.h` | TLS 1.2 (ECDHE X25519/P-256, AES-128-GCM, SHA-256) |
 | `tests/run_all.py` | Кроссплатформенный запуск всех модульных тестов (`test_fs`, `test_net`, `test_html`, `test_http`, `test_crypto`, `test_stas`) |
 
-## 4. Результаты тестирования (v0.6.1)
+## 4. Результаты тестирования (v0.7.0)
 
 ### 4.1. Модульные тесты хоста (`make test`) — 100% пройдены [ФАКТ]
 - `test_fs`: OK (файловая система, каталоги, запись, удаление).
@@ -48,49 +47,51 @@
 - `test_html`: OK (разбор тегов, ссылок, форматирование).
 - `test_http`: OK (парсинг URL, TCP loss recovery, chunked stream, редиректы, DoH).
 - `test_crypto`: OK (SHA-256, HMAC, AES, GCM, X25519).
-- `test_stas`: OK (индекс, SHA-256, запуск скриптов, `repo host`, `repo offline`, нормализация Windows CRLF).
+- `test_stas`: OK (индекс из 7 пакетов, SHA-256, запуск скриптов, `repo offline`, нормализация Windows CRLF).
 
-### 4.2. Прямое тестирование в VirtualBox VM (>95% команд) [ФАКТ]
-В виртуальной машине `cravgos060` (VirtualBox 7.x, Intel e1000 NAT, ATA HDD 2 ГБ) в режиме реального времени выполнены и зафиксированы на скриншотах 39 команд:
-1. `ver` — вывод `Cravgos 0.6.1 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)`.
-2. `uptime` — отсчёт аптайма в минутах и секундах.
-3. `calc 40+2` — корректный расчёт `42`.
-4. `cowsay CravgOS 0.6.1` — псевдографическая корова с текстом.
-5. `fastfetch` — цветной логотип, процессор (AMD Ryzen), RAM (2% used), ATA Disk.
-6. `free` — детализация Total RAM 112 MiB, kernel 0.1 MiB, buffers 2.7 MiB, ATA 2048 MiB.
-7. `time` — текущее время UTC по CMOS RTC.
-8. `date` — текущая дата (06.11.2026).
-9. `lang ru` — переключение на русскую раскладку ЙЦУКЕН.
-10. `lang en` / F12 — переключение раскладки обратно на English.
-11. `theme retro` — переключение цветовой палитры.
-12. `theme amber` — возврат к янтарной теме по умолчанию.
-13. `clear` — очистка текстового буфера экрана.
-14. `pwd` — печать текущей директории `/`.
-15. `mkdir /demo` — создание каталога.
-16. `cd /demo` — переход в каталог.
-17. `write a.txt Hello-0.6.1` — создание файла с записью строки.
-18. `append a.txt SecondLine` — добавление строки в конец файла.
-19. `cat a.txt` — корректное чтение созданных строк.
-20. `cp a.txt c.txt` — копирование файла.
-21. `mv c.txt m.txt` — переименование файла.
-22. `tree /demo` — дерево файлов.
-23. `df` — отчёт о свободных узлах и занятых байтах в RAMFS.
-24. `rm m.txt` — удаление файла.
-25. `save` — запись изменений RAMFS, темы и раскладки на диск ATA (`260 sectors`).
-26. `lspci` — листинг устройств шины PCI, сетевая карта Intel 82540EM (8086:100e).
-27. `ifconfig` — параметры сетевого интерфейса e1000 (MAC, IP 10.0.2.15, gateway 10.0.2.2).
-28. `dns 8.8.8.8` — ручная установка DNS сервера с сохранением от перезаписи DHCP.
-29. `ping 10.0.2.2 2` — отправка ICMP-пакетов шлюзу VirtualBox NAT, RTT 0 мс.
-30. `arp` — просмотр ARP-таблицы (MAC адрес шлюза 10.0.2.2).
-31. `curl http://httpforever.com` — реальный сетевой запрос, получение HTTP 200 OK, парсинг и вывод живого контента сайта без таймаутов.
-32. `stas repo offline` — переключение пакетного менеджера на встроенный офлайн-репозиторий.
-33. `stas update` — обновление индекса (`Index updated: 3 packages`).
-34. `stas list` — листинг доступных пакетов (`fact`, `guess`, `nim`).
-35. `stas install fact` — скачивание, проверка SHA-256 и установка пакета `fact`.
-36. `fact` — запуск установленного пакета прямо из шелла, ввод `5`, расчёт факториала `5! = 120`.
-37. `gui` — запуск графического рабочего окружения: таскбар, окно рабочего стола с тенью, кнопками запуска файлов, браузера, смены тем, часов и статуса сети.
-38. `help curl` — справка по команде.
-39. `echo hello_world > /test.txt` — перенаправление вывода в файл.
+### 4.2. Прямое тестирование в VirtualBox VM (v0.7.0) [ФАКТ]
+В виртуальной машине `cravgos060` (VirtualBox 7.x, Intel e1000 NAT, ATA HDD 2 ГБ) в режиме реального времени проверены и зафиксированы на скриншотах:
+1. `ver` — вывод `Cravgos 0.7.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)`.
+2. `help` — обновленная справка со всеми системными, сетевыми и пакетными командами (`user`, `hostname`, `setup`, `netmgr`, `wifi`).
+3. `setup` — интерактивный мастер первого запуска: ввод имени пользователя `cravg`, выбор темы `6` (Tokyo Night), запуск DHCP и сохранение на диск.
+4. Проверка пропуска мастера: при последующих загрузках флаг `setup_done == 1` загружается из суперблока ATA, стартовый мастер не мешает загрузке.
+5. `user admin` — смена текущего имени пользователя.
+6. `hostname cravgstation` — смена имени хоста.
+7. Шелл-промпт `admin@cravgstation:/ >` — мгновенное обновление формата командной строки.
+8. Сохранение и перезагрузка: после `reset` виртуальной машины имя пользователя `admin` и хост `cravgstation` корректно восстановлены из ATA Primary Master.
+9. Темы оформления:
+   - `theme tokyo` — неоновая палитра Tokyo Night (cyan/magenta/blue).
+   - `theme solarized` — палитра Solarized Dark (amber/green/cyan/base03).
+   - `theme colorblind` — контрастная палитра для людей с особенностями цветовосприятия.
+10. Сетевой менеджер (`wifi`):
+    - `wifi scan` — сканирование эфира 2.4/5 ГГц, листинг сетей `CravgOS-Net`, `Home-WiFi-5G`, `CravgOS-Lab`.
+    - `wifi connect Home-WiFi-5G mypassword123` — ассоциация, 4-стороннее WPA2-рукопожатие, получение IP по DHCP.
+    - `wifi status` — отображение параметров подключения, адаптера, IP-адреса и шлюза.
+11. Интерактивный TUI `netmgr`:
+    - Псевдографическое окно сетевого менеджера, выбор опции 4 (тестирование соединения через ICMP пинг шлюза 10.0.2.2).
+12. Пакетный менеджер `stas` и мини-игры:
+    - `stas update` — обновление индекса из 7 пакетов (`Index updated: 7 packages`).
+    - `stas list` — листинг всех пакетов (`bench`, `dice`, `fact`, `guess`, `math`, `nim`, `tower`).
+    - `stas install dice` -> запуск `dice`: дуэль в кости против компьютера до 3 побед.
+    - `stas install tower` -> запуск `tower`: текстовая RPG «Dungeon of Cravgos», исследование подземелья, бои с гоблином и орком, зелья и сбор золота.
+    - `stas install bench` -> запуск `bench`: тест производительности процессора в Long Mode (5000 итераций).
+    - `stas install math` -> запуск `math`: математический помощник, вычисление $2^{10} = 1024$.
+13. Графический десктоп `gui`:
+    - Запуск `[CravgOS 0.7.0 Desktop]` в палитре Tokyo Night с оконным менеджером, таскбаром и кнопками запуска.
+
+## 5. Оптимизация под реальное железо (v0.7.0)
+1. **Клавиатура**:
+   - Обработка скан-кода `0x3A` (Caps Lock).
+   - Функция `kbd_set_leds()` отправляет команду `0xED` в порт контроллера `0x60`, зажигая/гася аппаратный светодиод Caps Lock на физической клавиатуре.
+   - Корректная смена регистра букв A-Z и CP866 кириллицы с сохранением функционала Shift.
+2. **Мышь**:
+   - Защита от рассинхронизации PS/2 пакетов: при разрыве между байтами более 80 мс (`now - mouse_last_ms > 80`) счётчик `mpi` сбрасывается в 0, что гарантирует восстановление синхронизации при потере байта на реальном кабеле или USB-legacy эмуляции.
+3. **Сетевые карты и PCI**:
+   - Сканирование шин PCI расширено до 32 шин с ускоренным пропуском незадействованных мостов.
+   - Поддержка сетевых карт Intel семейств 82540, 82545, 82574L, 82567, 82579, I217, I219, I211.
+   - Определение контроллеров Realtek в `lspci`.
+4. **Суперблок ATA**:
+   - Размер структуры `struct disk_super` ровно 512 байт (`pad[360]`), сохранение `cur_user`, `cur_host`, `setup_done`, `wifi_ssid`, `wifi_pass`.
 
 ## 5. Решённые ключевые проблемы (v0.6.1)
 1. **Сброс настроек DNS**:

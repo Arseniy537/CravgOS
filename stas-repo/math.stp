@@ -1,0 +1,75 @@
+# math - Math utility: Power, Sum, GCD, Prime
+:menu
+say
+say === MATH ASSISTANT ===
+say 1. Power (a ^ b)
+say 2. Sum of numbers 1 to N
+say 3. Greatest Common Divisor (GCD)
+say 4. Prime test
+say 0. Exit
+put Choose option (0-4):$_
+ask m
+if m = 0 goto bye
+if m = 1 goto op_pow
+if m = 2 goto op_sum
+if m = 3 goto op_gcd
+if m = 4 goto op_prime
+goto menu
+:op_pow
+put Enter base a:$_
+ask a
+put Enter exponent b (>=0):$_
+ask b
+let r = 1
+let i = 0
+:pow_loop
+if i >= b goto pow_done
+let r = r * a
+let i = i + 1
+goto pow_loop
+:pow_done
+say Result: $a ^ $b = $r
+goto menu
+:op_sum
+put Enter N:$_
+ask n
+if n <= 0 goto menu
+let s = n + 1
+let s = s * n
+let s = s / 2
+say Sum from 1 to $n = $s
+goto menu
+:op_gcd
+put Enter first number:$_
+ask a
+put Enter second number:$_
+ask b
+:gcd_loop
+if b = 0 goto gcd_done
+let t = a % b
+let a = b
+let b = t
+goto gcd_loop
+:gcd_done
+say GCD = $a
+goto menu
+:op_prime
+put Enter number to test:$_
+ask n
+if n <= 1 goto not_prime
+let d = 2
+:prime_loop
+let q = d * d
+if q > n goto is_prime
+let r = n % d
+if r = 0 goto not_prime
+let d = d + 1
+goto prime_loop
+:is_prime
+say $n is a PRIME number!
+goto menu
+:not_prime
+say $n is NOT a prime number.
+goto menu
+:bye
+say Goodbye!

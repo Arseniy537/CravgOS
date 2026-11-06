@@ -306,7 +306,7 @@ static int http_fetch(const char *url, struct hres *r) {
         ps[pi] = 0;
         h_apnd(req, &n, sizeof req, ps);
     }
-    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.6.1; x86_64)\r\nAccept: ");
+    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.7.0; x86_64)\r\nAccept: ");
     h_apnd(req, &n, sizeof req, http_accept);
     h_apnd(req, &n, sizeof req, "\r\nConnection: close\r\n\r\n");
 #ifdef HTTP_TLS

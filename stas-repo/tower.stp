@@ -1,0 +1,81 @@
+# tower - Dungeon of Cravgos text adventure
+say
+say === DUNGEON OF CRAVGOS ===
+say You enter the dark dungeon with 20 HP.
+say Defeat 3 monsters to escape with the treasure!
+let h = 20
+let g = 0
+let p = 2
+let s = 1
+:room
+say
+say --- Floor $s of 3 ---
+say Your HP: $h | Gold: $g | Potions: $p
+if s = 1 goto goblin
+if s = 2 goto orc
+if s = 3 goto dragon
+:goblin
+let m = 8
+let a = 3
+say A wild Goblin appears! (HP: $m, ATK: $a)
+goto battle
+:orc
+let m = 14
+let a = 5
+say A fierce Orc blocks your way! (HP: $m, ATK: $a)
+goto battle
+:dragon
+let m = 22
+let a = 7
+say The Dungeon Dragon awakens! (HP: $m, ATK: $a)
+goto battle
+:battle
+say
+say Monster HP: $m | Your HP: $h
+say 1. Attack  2. Drink Potion (+10 HP)  0. Run away
+put What do you do?$_
+ask c
+if c = 0 goto coward
+if c = 2 goto drink
+if c != 1 goto battle
+let d = rnd 5
+let d = d + 3
+say You strike for $d damage!
+let m = m - d
+if m <= 0 goto monster_dead
+let e = rnd a
+say Monster attacks you for $e damage!
+let h = h - e
+if h <= 0 goto dead
+goto battle
+:drink
+if p <= 0 goto no_potion
+let p = p - 1
+let h = h + 10
+say Glug! You restored 10 HP.
+goto battle
+:no_potion
+say You have no potions left!
+goto battle
+:monster_dead
+say Monster defeated!
+let r = s * 25
+let g = g + r
+say You found $r gold!
+let s = s + 1
+if s > 3 goto victory
+goto room
+:victory
+say
+say ****************************************************
+say YOU CONQUERED THE DUNGEON!
+say Escaped safely with $g gold coins and $h HP left!
+say ****************************************************
+end
+:dead
+say
+say You collapsed in the dungeon... GAME OVER!
+end
+:coward
+say You fled from the dungeon in fear.
+end
