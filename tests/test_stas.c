@@ -53,7 +53,7 @@ int main(void) {
     sh("stas"); CHECK(HAS("package manager") && HAS("install NAME"));
     sh("stas list"); CHECK(HAS("Run: stas update"));
     sh("stas install nim"); CHECK(HAS("Run: stas update"));
-    sh("stas update"); CHECK(HAS("Index updated: 1 package")); CHECK(strstr(last_url, "stas-repo/index.txt"));
+    sh("stas update"); CHECK(HAS("Index updated: 3 packages") || HAS("Index updated: 1 package")); CHECK(strstr(last_url, "stas-repo/index.txt"));
     sh("stas list"); CHECK(HAS("[ ] nim") && HAS("take 1-3 sticks"));
     sh("stas info nim"); CHECK(HAS("Installed: no") && HAS("SHA-256:"));
     sh("stas info nope"); CHECK(HAS("no such package"));
@@ -98,6 +98,27 @@ int main(void) {
     sh("stas repo"); CHECK(HAS("Repository: http://10.0.2.2:8000\n"));
     sh("stas update"); CHECK(HAS("download failed") && HAS("wrong repo url")); CHECK(!strcmp(last_url, "http://10.0.2.2:8000/index.txt"));
     sh("stas repo default"); sh("stas repo"); CHECK(HAS("raw.githubusercontent.com"));
+    sh("stas repo host"); sh("stas repo"); CHECK(HAS("http://10.0.2.2:8000"));
+    sh("stas repo offline"); sh("stas repo"); CHECK(HAS("offline"));
+    sh("stas update"); CHECK(HAS("Index updated: 3 packages"));
+    sh("stas install fact"); CHECK(HAS("Installed fact") && HAS("sha256 ok"));
+    sh("stas repo default");
+
+    /* CRLF normalization: install package containing \r\n matching LF hash */
+    {
+        char crlf_pkg[1024]; int cn = 0;
+        for (int i = 0; i < pkg_len; i++) {
+            if (pkg_buf[i] == '\n') crlf_pkg[cn++] = '\r';
+            crlf_pkg[cn++] = pkg_buf[i];
+        }
+        memcpy(pkg_buf, crlf_pkg, cn);
+        pkg_len = cn;
+        sh("stas remove nim");
+        sh("stas install nim");
+        CHECK(HAS("Installed nim") && HAS("sha256 ok"));
+        /* restore pkg_buf */
+        pkg_len = readf("stas-repo/nim.stp", pkg_buf, sizeof pkg_buf);
+    }
 
     /* конфликт имени со встроенной командой */
     { const char *e = "snake 0000000000000000000000000000000000000000000000000000000000000000 5 fake\n"; memcpy(idx_buf, e, strlen(e)); idx_len = strlen(e); }

@@ -277,7 +277,13 @@ static int http_fetch(const char *url, struct hres *r) {
     if (https) return HE_HTTPS;
 #endif
     u32 ip;
-    if (!net_parse_ip(host, &ip)) { ip = http_resolve(host); if (!ip) return HE_DNS; }
+    if ((host[0] == '1' && host[1] == '2' && host[2] == '7' && host[3] == '.') ||
+        (host[0] == 'l' && host[1] == 'o' && host[2] == 'c' && host[3] == 'a' && host[4] == 'l')) {
+        ip = (ngw && ((nip >> 8) == 0x0A0002u)) ? ngw : 0x7F000001u;
+    } else if (!net_parse_ip(host, &ip)) {
+        ip = http_resolve(host);
+        if (!ip) return HE_DNS;
+    }
     tcp_buf = https ? http_raw : http_buf; tcp_bmax = https ? http_rawmax : http_max;
     if (tcp_connect(ip, (u16)port) < 0) return HE_CONNECT;
 #ifdef HTTP_TLS
@@ -291,7 +297,16 @@ static int http_fetch(const char *url, struct hres *r) {
     char req[800]; int n = 0;
     h_apnd(req, &n, sizeof req, "GET "); h_apnd(req, &n, sizeof req, path);
     h_apnd(req, &n, sizeof req, " HTTP/1.0\r\nHost: "); h_apnd(req, &n, sizeof req, host);
-    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Cravgos/0.3\r\nAccept: ");
+    if ((!https && port != 80) || (https && port != 443)) {
+        char ps[12]; int pi = 0;
+        ps[pi++] = ':';
+        int pv = port, pdiv = 10000;
+        while (pdiv > 1 && pv / pdiv == 0) pdiv /= 10;
+        while (pdiv >= 1) { ps[pi++] = '0' + (pv / pdiv); pv %= pdiv; pdiv /= 10; }
+        ps[pi] = 0;
+        h_apnd(req, &n, sizeof req, ps);
+    }
+    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.6.1; x86_64)\r\nAccept: ");
     h_apnd(req, &n, sizeof req, http_accept);
     h_apnd(req, &n, sizeof req, "\r\nConnection: close\r\n\r\n");
 #ifdef HTTP_TLS
@@ -321,6 +336,12 @@ static int http_fetch(const char *url, struct hres *r) {
         }
         if (tcp_fin || tcp_rst || tcp_state == TCP_CLOSED || tcp_overflow || http_tls_done()) break;
         if (hdr_end >= 0 && clen >= 0 && rl - hdr_end >= clen) break;
+        if (hdr_end >= 0 && clen < 0 && rl > hdr_end + 4) {
+            const u8 *b = http_buf + hdr_end;
+            int bl = rl - hdr_end;
+            if (bl >= 5 && b[bl - 5] == '\r' && b[bl - 4] == '\n' && b[bl - 3] == '0' && b[bl - 2] == '\r' && b[bl - 1] == '\n') break;
+            if (bl >= 7 && b[bl - 7] == '\r' && b[bl - 6] == '\n' && b[bl - 5] == '0' && b[bl - 4] == '\r' && b[bl - 3] == '\n' && b[bl - 2] == '\r' && b[bl - 1] == '\n') break;
+        }
         u32 now = ms_now();
         if (now - t_last > 8000 || now - t_start > 40000) break;
         if (http_abort && http_abort()) { http_shutdown(https); return HE_ABORT; }
@@ -409,9 +430,9 @@ static u32 json_first_ipv4(const char *s, int n) {          /* первый "dat
 }
 static u32 http_doh_lookup(const char *name) {
 #ifdef HTTP_TLS
-    static const char *base[2] = { "https://1.1.1.1/dns-query?type=A&name=", "https://8.8.8.8/resolve?type=A&name=" };
-    static const char *acc[2] = { "application/dns-json", "application/json" };
-    static const u32 who[2] = { 0x01010101u, 0x08080808u };
+    static const char *base[2] = { "https://8.8.8.8/resolve?type=A&name=", "https://1.1.1.1/dns-query?type=A&name=" };
+    static const char *acc[2] = { "application/json", "application/dns-json" };
+    static const u32 who[2] = { 0x08080808u, 0x01010101u };
     if (!http_doh_on || !http_raw || h_len(name) > 200) return 0;
     for (int k = 0; k < 2; k++) {
         char url[300]; int n = 0; url[0] = 0;

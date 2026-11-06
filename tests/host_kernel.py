@@ -18,8 +18,12 @@ assert 'host_exc_done' in k and 'host_mem' in k, "host patching failed"
 pre = 'void host_exc_done(void);\nunsigned char host_inb(unsigned short); void host_outb(unsigned short, unsigned char); unsigned host_inl(unsigned short); void host_outl(unsigned short, unsigned);\n'
 mainfile = sys.argv[1] if len(sys.argv) > 1 else 'host_main.c'
 out = pre + k + '\n' + open(os.path.join(root, 'tests', mainfile)).read()
-open('/tmp/host_kernel_gen.c', 'w').write(out)
-cmd = ['gcc', '-I', root, '-g', '-O1', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-builtin', '-w', '-o', '/tmp/' + (sys.argv[2] if len(sys.argv) > 2 else 'host_kernel'), '/tmp/host_kernel_gen.c']
+import tempfile
+tmp_dir = '/tmp' if os.path.exists('/tmp') else tempfile.gettempdir()
+gen_c = os.path.join(tmp_dir, 'host_kernel_gen.c')
+out_bin = os.path.join(tmp_dir, sys.argv[2] if len(sys.argv) > 2 else 'host_kernel')
+open(gen_c, 'w').write(out)
+cmd = ['gcc', '-I', root, '-g', '-O1', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-builtin', '-w', '-o', out_bin, gen_c]
 r = subprocess.run(cmd, capture_output=True, text=True)
 if r.returncode: print(r.stderr[:4000]); sys.exit(1)
 print("host harness built")

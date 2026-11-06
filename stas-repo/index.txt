@@ -1,1 +1,3 @@
+fact a719ae5713ec3166dd71a0818b8676d1da21502372f570b8a749159928c7713e 288 Calculate factorial n!
+guess e3e3986fbf35f0230b2f4754d5b5bac3dbd044e1deda37eb190598e5785ae60b 384 Guess the number (1-100)
 nim 8bd46690baf6d7cd6887e3e9aa9027569d5e80caf256e638c719c25aaf346283 587 game: take 1-3 sticks, whoever takes the LAST stick loses

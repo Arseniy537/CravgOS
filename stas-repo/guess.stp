@@ -1,0 +1,24 @@
+# guess - Guess the number (1-100)
+let s = rnd 100
+let c = 0
+say
+say === GUESS THE NUMBER ===
+say I am thinking of a number from 1 to 100.
+:loop
+let c = c + 1
+put Guess #$c:$_
+ask g
+if g = 0 goto bye
+if g < 1 goto loop
+if g = s goto win
+if g < s goto higher
+say Lower!
+goto loop
+:higher
+say Higher!
+goto loop
+:win
+say Congratulations! You guessed it in $c attempts!
+end
+:bye
+say Bye!

@@ -433,9 +433,17 @@ static u32 net_dns(const char *name) {
     int ql = dns_build(name, q);
     dns_why = 1; dns_used = 0; dns_rcode = -1;
     if (!ql) { dns_why = 4; return 0; }
-    u32 cand[3] = { ndns, ngw, ((nip >> 8) == 0x0A0002u) ? 0x0A000203u : 0 }, servers[3];
+    u32 cand[6] = {
+        ndns,
+        ngw,
+        ((nip >> 8) == 0x0A0002u) ? 0x0A000203u : 0,
+        ((ndns || ngw) && ngw) ? 0x4D580808u : 0, /* 77.88.8.8 (Yandex DNS) */
+        ((ndns || ngw) && ngw) ? 0x08080808u : 0, /* 8.8.8.8 (Google DNS) */
+        ((ndns || ngw) && ngw) ? 0x01010101u : 0  /* 1.1.1.1 (Cloudflare DNS) */
+    };
+    u32 servers[6];
     int ns = 0;
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < 6; c++) {
         int dup = 0;
         for (int k = 0; k < ns; k++) if (servers[k] == cand[c]) dup = 1;
         if (cand[c] && !dup) servers[ns++] = cand[c];
@@ -447,12 +455,12 @@ static u32 net_dns(const char *name) {
         const u8 *m = net_mac_for(srv);
         if (!m) { noarp = 1; continue; }
         dns_done = 0; dns_ip = 0;
-        for (int t = 0; t < (si == 0 ? 2 : 1) && !dns_done; t++) {
+        for (int t = 0; t < (si < 2 ? 2 : 1) && !dns_done; t++) {
             udp_send(m, nip, srv, dns_port, 53, q, ql);
             u32 t0 = ms_now();
-            while (ms_now() - t0 < 1500) { net_poll(); if (dns_done) break; }
+            while (ms_now() - t0 < 1000) { net_poll(); if (dns_done) break; }
         }
-        if (dns_done != 1 && si == 0) dns_tcp(srv, q, ql);        /* UDP молчит или ошибка: пробуем TCP */
+        if (dns_done != 1 && si < 2) dns_tcp(srv, q, ql);        /* UDP молчит или ошибка: пробуем TCP */
         if (dns_done == 1) { dns_why = 0; return dns_ip; }
         if (dns_done == 2) { if (dns_rcode == 3) nx = 1; else if (dns_rcode > 0) err = 1; else nodata = 1; }
         else silent = 1;

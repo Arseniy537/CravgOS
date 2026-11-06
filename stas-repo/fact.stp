@@ -1,0 +1,21 @@
+# fact - Calculate factorial n!
+say
+say === FACTORIAL ===
+:start
+put Enter n (1-12, 0 quits):$_
+ask n
+if n = 0 goto bye
+if n < 1 goto start
+if n > 12 goto start
+let r = 1
+let i = 1
+:loop
+let r = r * i
+if i = n goto done
+let i = i + 1
+goto loop
+:done
+say $n! = $r
+goto start
+:bye
+say Bye!

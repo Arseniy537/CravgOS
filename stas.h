@@ -29,6 +29,97 @@ static const char *stas_err;
 static int stas_http_fetch(const char *url, const char **body, int *len);
 static int (*stas_fetch)(const char *url, const char **body, int *len) = stas_http_fetch;
 
+static const char STAS_OFFLINE_INDEX[] =
+    "fact a719ae5713ec3166dd71a0818b8676d1da21502372f570b8a749159928c7713e 288 Calculate factorial n!\n"
+    "guess e3e3986fbf35f0230b2f4754d5b5bac3dbd044e1deda37eb190598e5785ae60b 384 Guess the number (1-100)\n"
+    "nim 8bd46690baf6d7cd6887e3e9aa9027569d5e80caf256e638c719c25aaf346283 587 game: take 1-3 sticks, whoever takes the LAST stick loses\n";
+
+static const char STAS_PKG_FACT[] =
+    "# fact - Calculate factorial n!\n"
+    "say\n"
+    "say === FACTORIAL ===\n"
+    ":start\n"
+    "put Enter n (1-12, 0 quits):$_\n"
+    "ask n\n"
+    "if n = 0 goto bye\n"
+    "if n < 1 goto start\n"
+    "if n > 12 goto start\n"
+    "let r = 1\n"
+    "let i = 1\n"
+    ":loop\n"
+    "let r = r * i\n"
+    "if i = n goto done\n"
+    "let i = i + 1\n"
+    "goto loop\n"
+    ":done\n"
+    "say $n! = $r\n"
+    "goto start\n"
+    ":bye\n"
+    "say Bye!\n";
+
+static const char STAS_PKG_GUESS[] =
+    "# guess - Guess the number (1-100)\n"
+    "let s = rnd 100\n"
+    "let c = 0\n"
+    "say\n"
+    "say === GUESS THE NUMBER ===\n"
+    "say I am thinking of a number from 1 to 100.\n"
+    ":loop\n"
+    "let c = c + 1\n"
+    "put Guess #$c:$_\n"
+    "ask g\n"
+    "if g = 0 goto bye\n"
+    "if g < 1 goto loop\n"
+    "if g = s goto win\n"
+    "if g < s goto higher\n"
+    "say Lower!\n"
+    "goto loop\n"
+    ":higher\n"
+    "say Higher!\n"
+    "goto loop\n"
+    ":win\n"
+    "say Congratulations! You guessed it in $c attempts!\n"
+    "end\n"
+    ":bye\n"
+    "say Bye!\n";
+
+static const char STAS_PKG_NIM[] =
+    "# nim - game: take 1-3 sticks, whoever takes the LAST stick loses\n"
+    "let s = rnd 10\n"
+    "let s = s + 15\n"
+    "say\n"
+    "say === NIM ===\n"
+    "say Take 1, 2 or 3 sticks. The last stick loses. 0 quits.\n"
+    ":turn\n"
+    "say\n"
+    "say Sticks left: $s\n"
+    ":ask\n"
+    "put Your move (1-3):$_\n"
+    "ask t\n"
+    "if t = 0 goto bye\n"
+    "if t < 1 goto ask\n"
+    "if t > 3 goto ask\n"
+    "if t > s goto ask\n"
+    "let s = s - t\n"
+    "if s = 0 goto lose\n"
+    "let t = s - 1\n"
+    "let t = t % 4\n"
+    "if t > 0 goto cpu\n"
+    "let t = 1\n"
+    ":cpu\n"
+    "say Computer takes $t\n"
+    "let s = s - t\n"
+    "if s = 0 goto win\n"
+    "goto turn\n"
+    ":lose\n"
+    "say You took the last stick. You lose!\n"
+    "end\n"
+    ":win\n"
+    "say The computer took the last stick. You win!\n"
+    "end\n"
+    ":bye\n"
+    "say Bye!\n";
+
 #ifndef STAS_NO_HTTP
 static int stas_http_fetch(const char *url, const char **body, int *len) {
     if (!net_ready()) { stas_err = "no network"; return -1; }
@@ -99,11 +190,22 @@ static void stas_repo_get(char *out, int max) {
 static int stas_get(const char *file, const char **b, int *n) {
     char url[256], repo[200]; int k = 0; url[0] = 0;
     stas_repo_get(repo, sizeof repo);
+    if (streq(repo, "offline") || streq(repo, "builtin")) {
+        if (streq(file, "index.txt")) { *b = STAS_OFFLINE_INDEX; *n = slen(*b); return 0; }
+        if (streq(file, "fact.stp")) { *b = STAS_PKG_FACT; *n = slen(*b); return 0; }
+        if (streq(file, "guess.stp")) { *b = STAS_PKG_GUESS; *n = slen(*b); return 0; }
+        if (streq(file, "nim.stp")) { *b = STAS_PKG_NIM; *n = slen(*b); return 0; }
+        stas_err = "package not in offline repository";
+        return -1;
+    }
     stas_cat(url, &k, sizeof url, repo); stas_cat(url, &k, sizeof url, "/"); stas_cat(url, &k, sizeof url, file);
     puts("GET "); puts(url); putc('\n');
     stas_err = "unknown error";
     int r = stas_fetch(url, b, n);
-    if (r < 0) { puts("stas: download failed: "); puts(stas_err); putc('\n'); }
+    if (r < 0) {
+        puts("stas: download failed: "); puts(stas_err); putc('\n');
+        puts("Tip: run 'stas repo host' (10.0.2.2:8000) or 'stas repo offline' (built-in packages)\n");
+    }
     return r;
 }
 static void stas_sha_hex(const u8 *d, int len, char *out) {
@@ -208,15 +310,40 @@ static void stas_install(const char *name) {
     const char *b; int n;
     if (stas_get(fn, &b, &n) < 0) return;
     if (n > FS_FSZ) { puts("stas: package is too big (max 2048 bytes)\n"); return; }
-    if (n != e.size) { puts("stas: size differs from the index - package rejected\n"); return; }
-    char hx[65]; stas_sha_hex((const u8 *)b, n, hx);
-    if (!stas_hexeq(hx, e.hash)) {
+
+    /* Normalize CRLF -> LF for Windows repository compatibility */
+    static char norm_buf[FS_FSZ + 1];
+    int norm_n = 0;
+    for (int i = 0; i < n && norm_n < FS_FSZ; i++) {
+        if (b[i] == '\r' && i + 1 < n && b[i + 1] == '\n') continue;
+        norm_buf[norm_n++] = b[i];
+    }
+    norm_buf[norm_n] = 0;
+
+    char hx[65], norm_hx[65];
+    stas_sha_hex((const u8 *)b, n, hx);
+    stas_sha_hex((const u8 *)norm_buf, norm_n, norm_hx);
+
+    const char *install_data = b;
+    int install_len = n;
+
+    if (n == e.size && stas_hexeq(hx, e.hash)) {
+        install_data = b;
+        install_len = n;
+    } else if (norm_n == e.size && stas_hexeq(norm_hx, e.hash)) {
+        install_data = norm_buf;
+        install_len = norm_n;
+    } else {
+        if (n != e.size && norm_n != e.size) {
+            puts("stas: size differs from the index - package rejected\n");
+            return;
+        }
         puts("stas: SHA-256 mismatch - package rejected\n  index: "); puts(e.hash); puts("\n  file:  "); puts(hx); putc('\n');
         return;
     }
-    int r = stas_put(name, b, n);
+    int r = stas_put(name, install_data, install_len);
     if (r < 0) { fs_err(r); return; }
-    puts("Installed "); puts(name); puts(" ("); putu(n); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
+    puts("Installed "); puts(name); puts(" ("); putu(install_len); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
 }
 static void stas_remove(const char *name) {
     if (!stas_okname(name)) { puts("stas: bad package name\n"); return; }
@@ -390,14 +517,14 @@ static int stas_try_app(const char *cmd) {
 static void cmd_stas(char *args) {
     char *sub = tok(&args), *a = tok(&args);
     if (!sub) {
-        puts("stas - package manager (packages come from your own repository)\n"
+        puts("stas - package manager (packages come from repository or offline)\n"
              "  stas update            download the package index\n"
              "  stas list              show packages ([x] = installed)\n"
              "  stas info NAME         details of a package\n"
              "  stas install NAME      download, verify (SHA-256) and install\n"
              "  stas remove NAME       uninstall\n"
              "  stas run NAME          run (an installed package is also a command)\n"
-             "  stas repo [URL|default]  show or set the repository URL\n");
+             "  stas repo [URL|default|host|offline]  show or set the repository\n");
         return;
     }
     if (streq(sub, "update")) stas_update();
@@ -412,10 +539,18 @@ static void cmd_stas(char *args) {
             int i = stas_node(".repo");
             if (i >= 0) { fs_remove(i); fs_sync(); }
             puts("Repository reset to the default.\n");
+        } else if (streq(a, "host") || streq(a, "local")) {
+            const char *h = "http://10.0.2.2:8000";
+            int r = stas_put(".repo", h, slen(h));
+            if (r < 0) fs_err(r); else { puts("Repository set to host (http://10.0.2.2:8000). Now run: stas update\n"); }
+        } else if (streq(a, "offline") || streq(a, "builtin")) {
+            const char *off = "offline";
+            int r = stas_put(".repo", off, slen(off));
+            if (r < 0) fs_err(r); else { puts("Repository set to offline (built-in). Now run: stas update\n"); }
         } else if ((a[0] == 'h' && a[1] == 't' && a[2] == 't' && a[3] == 'p') && slen(a) < 190) {
             int r = stas_put(".repo", a, slen(a));
             if (r < 0) fs_err(r); else { puts("Repository set. Now run: stas update\n"); }
-        } else puts("stas: the URL must start with http:// or https://\n");
+        } else puts("stas: the URL must start with http:// or https:// (or 'default', 'host', 'offline')\n");
     }
     else { puts("stas: unknown subcommand: "); puts(sub); puts("   (type 'stas' for help)\n"); }
 }

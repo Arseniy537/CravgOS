@@ -11,7 +11,10 @@ else
     RM ?= rm -rf
 endif
 
-all: cravgos.iso
+all: bootx64.efi cravgos.iso cravgos.bin
+
+bootx64.efi: boot_efi.c
+	gcc -nostdlib -m64 -O2 "-Wl,--subsystem,10" -e efi_main $< -o $@
 
 boot_iso.o: boot_iso.s cyrfont.inc
 	as $< -o $@
@@ -21,12 +24,13 @@ cravgos.elf: boot_iso.o kernel.o linker_iso.ld
 	ld $(LDFLAGS) -T linker_iso.ld -o $@ boot_iso.o kernel.o
 cravgos.img: cravgos.elf
 	objcopy -O binary -R .bigbss -R .reloc $< $@
-cravgos.iso: cravgos.img mkiso.py
+cravgos.iso: cravgos.img mkiso.py bootx64.efi
 	$(PYTHON) mkiso.py cravgos.img $@
 
 # Альтернатива: через GRUB (нужны grub-mkrescue, xorriso)
-grub: kernel.o boot.o linker.ld
-	ld $(LDFLAGS) -T linker.ld -o cravgos.bin boot.o kernel.o
+cravgos.bin: boot.o kernel.o linker.ld
+	ld $(LDFLAGS) -T linker.ld -o $@ boot.o kernel.o
+grub: cravgos.bin
 	mkdir -p isodir/boot/grub && cp cravgos.bin isodir/boot/
 	printf 'set timeout=0\nmenuentry "Cravgos (x86_64)" {\n  multiboot /boot/cravgos.bin\n  boot\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o cravgos-grub.iso isodir
@@ -34,18 +38,10 @@ boot.o: boot.s
 	as $< -o $@
 
 test:
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_fs tests/test_fs.c && /tmp/test_fs
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_net tests/test_net.c && /tmp/test_net
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_html tests/test_html.c && /tmp/test_html
-	gcc -Wall -Wno-unused-function -fsanitize=address,undefined -I. -o /tmp/test_image tests/test_image.c && $(PYTHON) tests/gen_images.py /tmp/cimg && /tmp/test_image /tmp/cimg/*
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_http tests/test_http.c && /tmp/test_http
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_crypto tests/test_crypto.c && /tmp/test_crypto
-	gcc -Wall -Wno-unused-function -I. -o /tmp/test_stas tests/test_stas.c && /tmp/test_stas
-	bash tests/run_tls_tests.sh
-	bash tests/run_https_e2e.sh
+	$(PYTHON) tests/run_all.py
 
 run: cravgos.iso
 	qemu-system-x86_64 -cdrom cravgos.iso
 
 clean:
-	$(PYTHON) -c "import os, glob; [os.remove(f) for p in ('*.o','*.elf','*.img','cravgos.bin','cravgos*.iso') for f in glob.glob(p)]"
+	$(PYTHON) -c "import os, glob; [os.remove(f) for p in ('*.o','*.elf','*.img','*.bin','*.efi','cravgos*.iso') for f in glob.glob(p)]"

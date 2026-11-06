@@ -624,7 +624,7 @@ static void fetch(void) {
         switch (i) {
         case 0: color = th->user; puts("user"); color = th->base; puts("@"); color = th->user; puts("cravgos"); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.6 x86_64"); break;
+        case 2: kv("OS", "Cravgos 0.6.1 x86_64"); break;
         case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
@@ -941,13 +941,15 @@ static int need_nic(void) {
          "VirtualBox: Settings > Network > Adapter Type = Intel PRO/1000 MT Desktop.\n");
     return 0;
 }
-static int net_conf_done, net_dhcp_ok;      /* настройка по DHCP уже пробовалась / удалась */
+static int net_conf_done, net_dhcp_ok, ndns_manual;      /* настройка по DHCP уже пробовалась / удалась / ручной DNS */
 static void net_autoconf(int verbose) {     /* при первом выходе в сеть сами спрашиваем DHCP */
     if (net_conf_done || !nic_ok) return;
     net_conf_done = 1;
+    u32 prev_dns = ndns;
     if (verbose) puts("Network: asking DHCP for settings...\n");
     if (net_dhcp_ex(2, 1200) == 0) {
         net_dhcp_ok = 1;
+        if (ndns_manual) ndns = prev_dns;
         if (verbose) { puts("  got "); putip(nip); puts(", gateway "); putip(ngw); puts(", dns "); putip(ndns); putc('\n'); }
     } else if (verbose) puts("  no DHCP answer - using the defaults (10.0.2.15, VirtualBox NAT)\n");
 }
@@ -970,6 +972,8 @@ static void cmd_dns(char *args) {
     u32 ip;
     if (!net_parse_ip(a, &ip)) { puts("dns: not an IPv4 address\n"); return; }
     ndns = ip;
+    ndns_manual = 1;
+    net_conf_done = 1;
     puts("DNS server set to "); putip(ip); putc('\n');
 }
 static void cmd_ifconfig(void) {
@@ -987,6 +991,7 @@ static void cmd_ifconfig(void) {
 static void cmd_dhcp(void) {
     if (!need_nic()) return;
     puts("DHCP...\n");
+    ndns_manual = 0;
     net_conf_done = 1;
     if (net_dhcp() == 0) { net_dhcp_ok = 1; puts("Got "); putip(nip); puts(" gw "); putip(ngw); puts(" dns "); putip(ndns); putc('\n'); }
     else puts("DHCP failed (no answer). Keeping previous settings.\n");
@@ -1052,7 +1057,7 @@ static void cmd_nslookup(char *args) {
 }
 static void cmd_netdiag(void) {
     if (!net_ready()) return;
-    u32 cand[5] = { ndns, ngw, 0x0A000203u, 0x08080808u, 0x01010101u };
+    u32 cand[6] = { ndns, ngw, 0x0A000203u, 0x4D580808u, 0x08080808u, 0x01010101u };
     puts("== network self-test ==\n");
     puts("ip "); putip(nip); puts("  mask "); putip(nmask); puts("  gateway "); putip(ngw); puts("  dns "); putip(ndns); putc('\n');
     puts("link "); puts((nr(0x0008) & 2) ? "up" : "DOWN"); puts("   config "); puts(net_dhcp_ok ? "DHCP" : "defaults"); putc('\n');
@@ -1066,7 +1071,7 @@ static void cmd_netdiag(void) {
         if (r == 0) { putu(rtt); puts(" ms\n"); } else puts("no reply (some NATs ignore ping - not always an error)\n");
     }
     puts("DNS test, one UDP query for example.com per server:\n");
-    for (int c = 0; c < 5; c++) {
+    for (int c = 0; c < 6; c++) {
         int dup = 0;
         for (int k = 0; k < c; k++) if (cand[k] == cand[c]) dup = 1;
         if (!cand[c] || dup) continue;
@@ -2067,6 +2072,150 @@ static void cmd_theme(char *args) {
     puts("unknown theme (try: theme)\n");
 }
 
+/* ============================================================================
+ * Графическая подсистема и абстракция дисплея (Display / Desktop Environment)
+ * ============================================================================ */
+struct fb_info {
+    u32 width;
+    u32 height;
+    u32 pitch;
+    u32 bpp;
+    u8 *vram;
+    u8 is_graphics;
+};
+
+static struct fb_info g_fb __attribute__((unused)) = {
+    80, 25, 80 * 2, 16, (u8 *)0xB8000, 0
+};
+
+static void cmd_gui(void) {
+    u8 omui = mouse_ui;
+    mouse_ui = 1;
+    cursor_hide();
+
+    int active_win = 1;
+    int win_x = 10, win_y = 3, win_w = 60, win_h = 17;
+    int redraw = 1;
+
+    for (;;) {
+        if (redraw) {
+            redraw = 0;
+            mouse_forget();
+
+            /* Desktop background pattern */
+            for (int y = 0; y < H; y++) {
+                for (int x = 0; x < W; x++) {
+                    char bg = (x % 4 == 0 && y % 2 == 0) ? (char)0xB0 : ' ';
+                    put_at(x, y, bg, th->base);
+                }
+            }
+
+            /* Top Taskbar */
+            fill_rect(0, 0, W, 1, th->title);
+            put_clip(1, 0, "[CravgOS 0.6.1 Desktop]", 24, th->sel);
+            put_clip(27, 0, "1:Files  2:Web  3:Theme  4:Exit", 35, th->title);
+            put_clip(W - 9, 0, kbd_ru ? "[RU] " : "[EN] ", 5, th->mark);
+            put_clip(W - 4, 0, "[X]", 3, th->mark);
+
+            /* Desktop Icons */
+            put_str_at(2, 2, "[fm] Files", th->head);
+            put_str_at(2, 5, "[web] Browser", th->head);
+            put_str_at(2, 8, "[stas] Apps", th->head);
+            put_str_at(2, 11, "[sh] Terminal", th->head);
+
+            /* Main Active Window */
+            if (active_win) {
+                fill_rect(win_x + 2, win_y + 1, win_w, win_h, 0x08);
+                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.6.1");
+                put_str_at(win_x + win_w - 4, win_y, "[X]", th->dlg);
+
+                put_clip(win_x + 3, win_y + 2, "Architecture: x86_64 Long Mode (BIOS / UEFI / GRUB)", win_w - 6, th->dlg);
+                put_clip(win_x + 3, win_y + 3, "Display: Video Framebuffer / Text Console 80x25", win_w - 6, th->dlg);
+
+                char netinfo[64]; int nn = 0; netinfo[0] = 0;
+                h_apnd(netinfo, &nn, sizeof netinfo, "Network: Intel e1000 ");
+                h_apnd(netinfo, &nn, sizeof netinfo, (nr(0x0008) & 2) ? "[ONLINE]" : "[OFFLINE]");
+                put_clip(win_x + 3, win_y + 5, netinfo, win_w - 6, th->dlg);
+
+                char fsinfo[64]; int fn = 0; fsinfo[0] = 0;
+                h_apnd(fsinfo, &fn, sizeof fsinfo, "Filesystem: RAMFS + ATA Disk Persistence");
+                put_clip(win_x + 3, win_y + 6, fsinfo, win_w - 6, th->dlg);
+
+                fill_rect(win_x + 4, win_y + 8, 12, 3, th->sel);
+                put_str_at(win_x + 6, win_y + 9, "1. Files", th->sel);
+
+                fill_rect(win_x + 18, win_y + 8, 12, 3, th->sel);
+                put_str_at(win_x + 19, win_y + 9, "2. Browser", th->sel);
+
+                fill_rect(win_x + 32, win_y + 8, 12, 3, th->sel);
+                put_str_at(win_x + 33, win_y + 9, "3. Theme", th->sel);
+
+                fill_rect(win_x + 46, win_y + 8, 10, 3, th->sel);
+                put_str_at(win_x + 47, win_y + 9, "4. Exit", th->sel);
+
+                put_clip(win_x + 3, win_y + 13, "Hotkeys: 1-4 launch app, F2 change theme, Esc/Q exit", win_w - 6, th->dlg);
+                put_clip(win_x + 3, win_y + 14, "Mouse: click buttons or icons to launch applications", win_w - 6, th->dlg);
+            }
+
+            fill_rect(0, H - 1, W, 1, th->bar);
+            put_clip(1, H - 1, "Ready | Click app or press 1-4 | F2: Theme | Q / Esc: Exit to CLI", W - 2, th->bar);
+
+            mouse_draw();
+        }
+
+        int k = ui_wait();
+        if (k == UI_MOVE) { mouse_draw(); continue; }
+        if (k == 27 || k == 'q' || k == 'Q') break;
+        if (k == K_F1 + 1 || k == 't' || k == 'T') {
+            theme_apply((theme_index() + 1) % NTHEMES);
+            redraw = 1;
+            continue;
+        }
+        if (k == '1') {
+            commander();
+            redraw = 1;
+            continue;
+        }
+        if (k == '2') {
+            cmd_web("");
+            redraw = 1;
+            continue;
+        }
+        if (k == '3') {
+            int t = dlg_theme(); if (t >= 0) theme_apply(t);
+            redraw = 1;
+            continue;
+        }
+        if (k == '4') {
+            break;
+        }
+        if (k == UI_CLICK) {
+            if (ui_cy == 0 && ui_cx >= W - 5) break;
+            if (active_win && ui_cy == win_y && ui_cx >= win_x + win_w - 4 && ui_cx <= win_x + win_w - 1) {
+                break;
+            }
+            if (active_win && ui_cy >= win_y + 8 && ui_cy <= win_y + 10) {
+                if (ui_cx >= win_x + 4 && ui_cx <= win_x + 16) { commander(); redraw = 1; continue; }
+                if (ui_cx >= win_x + 18 && ui_cx <= win_x + 30) { cmd_web(""); redraw = 1; continue; }
+                if (ui_cx >= win_x + 32 && ui_cx <= win_x + 44) { int t = dlg_theme(); if (t >= 0) theme_apply(t); redraw = 1; continue; }
+                if (ui_cx >= win_x + 46 && ui_cx <= win_x + 56) { break; }
+            }
+            if (ui_cx >= 1 && ui_cx <= 15) {
+                if (ui_cy >= 2 && ui_cy <= 3) { commander(); redraw = 1; continue; }
+                if (ui_cy >= 5 && ui_cy <= 6) { cmd_web(""); redraw = 1; continue; }
+                if (ui_cy >= 8 && ui_cy <= 9) { int t = dlg_theme(); if (t >= 0) theme_apply(t); redraw = 1; continue; }
+                if (ui_cy >= 11 && ui_cy <= 12) { break; }
+            }
+        }
+    }
+
+    mouse_ui = omui;
+    mouse_forget();
+    ui_drop_events();
+    color = th->base;
+    clear();
+    cursor_show();
+}
 
 /* ---------- Оформление: рамки, заставка ---------- */
 static u8 tls_rawbuf[300000] XBSS;
@@ -2142,6 +2291,7 @@ static const struct cinfo cmdtab[] = {
  {"snake", "", "snake", "Snake with arrows or WASD; Q quits."},
  {"matrix", "", "matrix", "Falling-code screen saver. Any key exits."},
  {"beep", "", "beep", "Play a short melody on the PC speaker (the VM may be silent)."},
+ {"gui", "desktop gfx", "gui", "Graphical desktop environment: window manager, taskbar, clock, app launcher and mouse support."},
 };
 #define NCMD ((int)(sizeof cmdtab / sizeof cmdtab[0]))
 static int word_in(const char *list, const char *w) {
@@ -2190,7 +2340,7 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.6 (x86_64) - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.6.1 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
     bx_row("         ", "fastfetch free save reboot halt crashtest", 78);
@@ -2201,7 +2351,7 @@ static void help(char *args) {
     bx_row("NETWORK  ", "web (http+https browser) curl ifconfig dhcp dns ping", 78);
     bx_row("         ", "nslookup netdiag arp lspci", 78);
     bx_mid(78);
-    bx_row("TOOLS    ", "calc cowsay stas (packages)", 78);
+    bx_row("TOOLS    ", "calc cowsay stas (packages) gui (desktop)", 78);
     bx_row("GAMES    ", "guess rps snake                FUN   matrix beep", 78);
     bx_mid(78);
     bx_row("TIP      ", "help COMMAND shows usage and an example, e.g.  help ping", 78);
@@ -2232,10 +2382,11 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.6 (x86_64)", "  -  terminal operating system for x86_64", 62);
+    bx_row("Cravgos 0.6.1 (x86_64)", "  -  operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
+    bx_row("gui  ", "graphical desktop environment", 62);
     bx_row("help ", "all commands", 62);
     bx_bot(62);
 }
@@ -2253,7 +2404,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.6 (x86_64)  -  64-bit terminal OS", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.6.1 (x86_64)  -  64-bit OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2288,7 +2439,7 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.6 (x86_64) - terminal-only 64-bit OS (long mode, mouse, themes, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.6.1 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
     /* файлы */
     else if (streq(cmd, "ls")) cmd_ls(args);
     else if (streq(cmd, "pwd")) { char p[256]; fs_path(fs_cwd, p); puts(p); putc('\n'); }
@@ -2359,6 +2510,7 @@ static void run(char *line) {
     else if (streq(cmd, "web") || streq(cmd, "browse")) cmd_web(args);
     else if (streq(cmd, "curl") || streq(cmd, "wget")) cmd_curl(args);
     else if (streq(cmd, "fm") || streq(cmd, "mc") || streq(cmd, "files")) commander();
+    else if (streq(cmd, "gui") || streq(cmd, "desktop") || streq(cmd, "gfx")) cmd_gui();
     else if (streq(cmd, "theme")) cmd_theme(args);
     else if (streq(cmd, "stas")) cmd_stas(args);
     /* игры и прочее */

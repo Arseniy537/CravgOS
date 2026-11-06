@@ -16,5 +16,5 @@ for f in sorted(os.listdir(d)):
     lines.append(f"{name} {hashlib.sha256(data).hexdigest()} {len(data)} {desc}")
 out = '\n'.join(lines) + '\n'
 assert len(out) <= 2048, "index.txt must stay under 2048 bytes"
-open(os.path.join(d, 'index.txt'), 'w').write(out)
+open(os.path.join(d, 'index.txt'), 'w', newline='\n').write(out)
 print(out, end='')
