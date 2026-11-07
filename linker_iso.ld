@@ -9,6 +9,7 @@ SECTIONS
     .bss    : { *(COMMON) *(.bss) }
     __bss_end = .;
     /* большие буферы (страницы, HTTP) лежат с 1 МБ и в образ не попадают */
-    .bigbss 0x100000 (NOLOAD) : { __bigbss_start = .; *(.bss.xbig) __bigbss_end = .; }
+    .bigbss 0x100000 : { __bigbss_start = .; KEEP(*(.bss.xbig)) __bigbss_end = .; }
     /DISCARD/ : { *(.eh_frame) *(.note*) *(.comment) *(.pdata) *(.xdata) }
 }
+ASSERT(__bss_end <= 0x80000, ".bss section exceeds 0x80000 (conventional memory limit)!");

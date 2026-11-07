@@ -8,7 +8,14 @@
 #undef putc
 #undef puts
 #undef getc
+#ifdef _WIN32
+__declspec(dllimport) void * __stdcall VirtualAlloc(void *lpAddress, size_t dwSize, unsigned long flAllocationType, unsigned long flProtect);
+#define MEM_COMMIT 0x00001000
+#define MEM_RESERVE 0x00002000
+#define PAGE_READWRITE 0x04
+#else
 #include <sys/mman.h>
+#endif
 #include <setjmp.h>
 static jmp_buf exc_jb;
 void host_exc_done(void) { longjmp(exc_jb, 1); }
@@ -126,7 +133,11 @@ static void dumpscreen(const char *title) {
 }
 #define EXPECT(c) do { if (!(c)) { printf("EXPECT FAILED line %d: %s\n", __LINE__, #c); sc_fail++; } } while (0)
 int main(void) {
+#ifdef _WIN32
+    if (!VirtualAlloc((void *)0xB8000, 0x8000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)) { perror("VirtualAlloc vga"); return 9; }
+#else
     if (mmap((void *)0xB8000, 0x8000, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) == MAP_FAILED) { perror("mmap vga"); return 9; }
+#endif
     memset((void *)0xB8000, 0, 0x8000);
     key_init(); pit_init(); pit_prev = pit_read(); boot_tod = tod(); rng = 12345; fs_boot();
     nic_tx = h_tx; nic_rx = h_rx; ms_now = now_ms; nic_ok = 1; nip = 0x0A00020F; nmask = 0xFFFFFF00u; ngw = 0x0A000202; ndns = 0x0A000203;
@@ -190,7 +201,7 @@ int main(void) {
     for (int v = 32; v < 256; v++) { u8 *gt = idt_tab + v * 8; u32 hd = isr_table[32]; EXPECT(gt[0] == (u8)hd && gt[5] == 0x8E); }
     strcpy(last_cmd, "crashtest");
     { u32 frame[5] = {13, 0x1234, 0xC0DE1234u, 8, 2}; for (int q = 0; q < 70; q++) hpush(0x9C, 0); kdown(0x1C);
-      if (!setjmp(exc_jb)) exception_handler(frame);
+      if (!setjmp(exc_jb)) exception_handler((struct exc_frame *)(void *)frame);
       dumpscreen("after exception handler returned to shell"); }
     EXPECT(1);
     printf("\n##### COMMANDER (fm)\n");

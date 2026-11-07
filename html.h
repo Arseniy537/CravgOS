@@ -31,6 +31,33 @@ static u16 img_lk[IMG_MAX];
 static char lk_url[PG_MAXLK][LK_LEN] XBSS;
 static int pg_lines, lk_count;
 static char pg_title[80];
+#define FORM_MAX 16
+#define INP_MAX  64
+typedef struct {
+    char action[128];
+    char method[8];
+    int inp_start;
+    int inp_count;
+} html_form_t;
+
+typedef struct {
+    char name[32];
+    char type[16];
+    char value[128];
+    char placeholder[64];
+    int line;
+    int col;
+    int width;
+    int form_idx;
+} html_inp_t;
+
+static html_form_t forms[FORM_MAX] XBSS;
+static int form_cnt;
+static html_inp_t inps[INP_MAX] XBSS;
+static int inp_cnt;
+static u8 pg_inp[PG_MAXL][PG_W] XBSS;
+static int cur_form;
+
 
 static int rl, rc, psp, rpre, rskip, rtitle, rfull, rbold, rhd;
 static u8 ra;
@@ -41,7 +68,7 @@ static u16 wlk[PG_W + 1];
 static int wn;
 
 static void r_line_init(int l) {
-    for (int x = 0; x < PG_W; x++) { pg_ch[l][x] = ' '; pg_at[l][x] = PA_TEXT; pg_lk[l][x] = 0; }
+    for (int x = 0; x < PG_W; x++) { pg_ch[l][x] = ' '; pg_at[l][x] = PA_TEXT; pg_lk[l][x] = 0; pg_inp[l][x] = 0; }
     pg_len[l] = 0; pg_im[l] = 0;
 }
 static void r_newline(void) {
@@ -269,12 +296,99 @@ static void r_tag(int close, const char *n, int len, const char *ts, const char 
         if (close && (name_is(n, len, "script") || name_is(n, len, "style"))) rskip = 0;
         return;
     }
+        if (name_is(n, len, "form")) {
+        r_break(0);
+        if (close) {
+            cur_form = -1;
+        } else if (form_cnt < FORM_MAX) {
+            cur_form = form_cnt++;
+            forms[cur_form].action[0] = 0;
+            tag_attr(ts, te, "action", forms[cur_form].action, sizeof(forms[cur_form].action));
+            char meth[16]; meth[0] = 0;
+            tag_attr(ts, te, "method", meth, sizeof(meth));
+            if (meth[0] == 'p' || meth[0] == 'P') {
+                forms[cur_form].method[0] = 'P'; forms[cur_form].method[1] = 'O'; forms[cur_form].method[2] = 'S'; forms[cur_form].method[3] = 'T'; forms[cur_form].method[4] = 0;
+            } else {
+                forms[cur_form].method[0] = 'G'; forms[cur_form].method[1] = 'E'; forms[cur_form].method[2] = 'T'; forms[cur_form].method[3] = 0;
+            }
+            forms[cur_form].inp_start = inp_cnt;
+            forms[cur_form].inp_count = 0;
+        }
+        return;
+    }
+    if (name_is(n, len, "input") || name_is(n, len, "button")) {
+        if (!close && inp_cnt < INP_MAX) {
+            int idx = inp_cnt++;
+            inps[idx].name[0] = 0;
+            inps[idx].type[0] = 0;
+            inps[idx].value[0] = 0;
+            inps[idx].placeholder[0] = 0;
+            tag_attr(ts, te, "name", inps[idx].name, sizeof(inps[idx].name));
+            tag_attr(ts, te, "type", inps[idx].type, sizeof(inps[idx].type));
+            if (!inps[idx].type[0]) {
+                if (name_is(n, len, "button")) {
+                    inps[idx].type[0] = 's'; inps[idx].type[1] = 'u'; inps[idx].type[2] = 'b'; inps[idx].type[3] = 'm'; inps[idx].type[4] = 'i'; inps[idx].type[5] = 't'; inps[idx].type[6] = 0;
+                } else {
+                    inps[idx].type[0] = 't'; inps[idx].type[1] = 'e'; inps[idx].type[2] = 'x'; inps[idx].type[3] = 't'; inps[idx].type[4] = 0;
+                }
+            }
+            tag_attr(ts, te, "value", inps[idx].value, sizeof(inps[idx].value));
+            tag_attr(ts, te, "placeholder", inps[idx].placeholder, sizeof(inps[idx].placeholder));
+            char sz[16]; sz[0] = 0;
+            int width = 20;
+            if (tag_attr(ts, te, "size", sz, sizeof(sz))) {
+                int v = 0;
+                for (int k = 0; sz[k] >= '0' && sz[k] <= '9'; k++) v = v * 10 + (sz[k] - '0');
+                if (v > 0 && v < 70) width = v;
+            }
+            inps[idx].width = width;
+            inps[idx].form_idx = cur_form;
+            if (cur_form >= 0) forms[cur_form].inp_count++;
+
+            int is_sub = (inps[idx].type[0] == 's' && inps[idx].type[1] == 'u');
+            if (is_sub) {
+                if (!inps[idx].value[0]) {
+                    const char *def_sub = "Submit";
+                    for (int k = 0; def_sub[k]; k++) inps[idx].value[k] = def_sub[k];
+                    inps[idx].value[6] = 0;
+                }
+                inps[idx].width = 0;
+                while (inps[idx].value[inps[idx].width]) inps[idx].width++;
+            }
+            r_flush();
+            if (rc + inps[idx].width + 2 >= PG_W && rc > 0) r_newline();
+            inps[idx].line = rl;
+            inps[idx].col = rc;
+            if (is_sub) {
+                r_put('[', PA_BULLET, 0);
+                pg_inp[rl][rc - 1] = (u8)(idx + 1);
+                for (int k = 0; inps[idx].value[k]; k++) {
+                    r_put(inps[idx].value[k], PA_BOLD, 0);
+                    pg_inp[rl][rc - 1] = (u8)(idx + 1);
+                }
+                r_put(']', PA_BULLET, 0);
+                pg_inp[rl][rc - 1] = (u8)(idx + 1);
+            } else {
+                r_put('[', PA_DIM, 0);
+                pg_inp[rl][rc - 1] = (u8)(idx + 1);
+                int vlen = 0; while (inps[idx].value[vlen]) vlen++;
+                for (int k = 0; k < width; k++) {
+                    char ch = k < vlen ? inps[idx].value[k] : ' ';
+                    r_put(ch, PA_TEXT, 0);
+                    pg_inp[rl][rc - 1] = (u8)(idx + 1);
+                }
+                r_put(']', PA_DIM, 0);
+                pg_inp[rl][rc - 1] = (u8)(idx + 1);
+            }
+        }
+        return;
+    }
     if (name_is(n, len, "script") || name_is(n, len, "style")) { if (!close) rskip = 1; return; }
     if (name_is(n, len, "title")) { rtitle = !close; return; }
     if (name_is(n, len, "br")) { r_flush(); psp = 0; r_newline(); return; }
     if (name_is(n, len, "p") || name_is(n, len, "ul") || name_is(n, len, "ol") || name_is(n, len, "table") || name_is(n, len, "blockquote")) { r_break(1); return; }
     if (name_is(n, len, "div") || name_is(n, len, "section") || name_is(n, len, "article") || name_is(n, len, "header") ||
-        name_is(n, len, "footer") || name_is(n, len, "nav") || name_is(n, len, "main") || name_is(n, len, "form") ||
+        name_is(n, len, "footer") || name_is(n, len, "nav") || name_is(n, len, "main") ||
         name_is(n, len, "tr") || name_is(n, len, "dl") || name_is(n, len, "dt") || name_is(n, len, "dd") || name_is(n, len, "aside")) { r_break(0); return; }
     if (len == 2 && (n[0] | 32) == 'h' && n[1] >= '1' && n[1] <= '6') {
         r_break(1);
@@ -336,7 +450,7 @@ static void html_img_shrink(int k, int keep) {
     if (d <= 0) return;
     for (int l = a; l + d < pg_lines; l++) {
         for (int x = 0; x < PG_W; x++) { pg_ch[l][x] = pg_ch[l + d][x]; pg_at[l][x] = pg_at[l + d][x]; pg_lk[l][x] = pg_lk[l + d][x]; }
-        pg_len[l] = pg_len[l + d]; pg_im[l] = pg_im[l + d];
+        pg_len[l] = pg_len[l + d]; pg_im[l] = pg_im[l + d]; for (int x = 0; x < PG_W; x++) pg_inp[l][x] = pg_inp[l + d][x];
     }
     pg_lines -= d;
     for (int j = k + 1; j < img_cnt; j++) img_line[j] -= d;
@@ -344,7 +458,7 @@ static void html_img_shrink(int k, int keep) {
 
 static void html_render(const char *s, int len, int plain) {
     rl = 0; rc = 0; psp = 0; rpre = plain; rskip = 0; rtitle = 0; rfull = 0; rbold = 0; rhd = 0; rlk = 0; ra = PA_TEXT; wn = 0;
-    pg_lines = 1; lk_count = 0; pg_title[0] = 0; img_cnt = 0;
+    pg_lines = 1; lk_count = 0; pg_title[0] = 0; img_cnt = 0; form_cnt = 0; inp_cnt = 0; cur_form = -1;
     r_line_init(0);
     int i = 0;
     while (i < len && !rfull) {

@@ -1,3 +1,4 @@
+#define XBSS __attribute__((section(".bss.xbig")))
 typedef unsigned char      u8;
 typedef unsigned short     u16;
 typedef unsigned int       u32;
@@ -166,9 +167,10 @@ static u32 now_ms(void) {              /* миллисекунды; вызыва
 }
 static u32 uptime_s(void) { return now_ms() / 1000u; }
 static void delay_ms(u32 ms) {
-    u32 need = ms * 1193u, got = 0;
-    u16 last = pit_read();
-    while (got < need) { u16 now = pit_read(); got += (u16)(last - now); last = now; }
+    u32 t0 = now_ms();
+    while (now_ms() - t0 < ms) {
+        __asm__ volatile("pause");
+    }
 }
 
 /* ---------- Случайные числа ---------- */
@@ -635,7 +637,6 @@ static int disk_load(void) {
     disk_loading = 0;
     return 1;
 }
-#define XBSS __attribute__((section(".bss.xbig")))
 #include "net.h"
 #include "tls.h"
 #define HTTP_TLS 1
@@ -1564,11 +1565,16 @@ static void page_viewer(const char *title) {
 #define BR_HIST 12
 static char br_url[256], br_hist[BR_HIST][256], br_status[100];
 static int br_hn, br_top, br_focus, br_hover, br_dirty;
+static int br_focus_inp = -1;
 static struct hres br_res;
 static u8 http_data[262144] XBSS;
 static const char br_start[] =
     "<h1>Cravgos Web</h1><p>A text-mode browser. <b>Click</b> links with the mouse, scroll with the wheel, "
     "right-click goes back. Keys: G = type an address, Tab/Enter = follow a link, B = back, Q = quit.</p>"
+    "<p><b>Web Search (DuckDuckGo):</b></p>"
+    "<form action=\"http://html.duckduckgo.com/html/\" method=\"POST\">"
+    "<input type=\"text\" name=\"q\" placeholder=\"Search the web...\" size=\"30\"> "
+    "<input type=\"submit\" value=\"Search\"></form>"
     "<h2>Plain HTTP sites</h2><ul>"
     "<li><a href='http://example.com/'>example.com</a> - the classic example page</li>"
     "<li><a href='http://neverssl.com/'>neverssl.com</a> - never redirects to HTTPS</li>"
@@ -1604,8 +1610,10 @@ static void br_draw(void) {
         for (int x = 0; x < W; x++) {
             if (line < pg_lines) {
                 u16 lk = pg_lk[line][x];
+                u8 inpid = pg_inp[line][x];
                 u8 at = pg_im[line] ? pg_at[line][x] : th_page_attr(pg_at[line][x]);
                 if (lk && !pg_im[line] && (lk == br_focus || lk == br_hover)) at = th->sel;
+                if (inpid && (br_focus_inp == inpid - 1)) at = th->user;
                 put_at(x, y, pg_ch[line][x], at);
             } else put_at(x, y, ' ', th->file);
         }
@@ -1617,6 +1625,17 @@ static void br_draw(void) {
         else put_clip(1, H - 1, lk_url[br_hover], 76, th->bar);
     } else put_clip(1, H - 1, br_status, 60, th->bar);
     { char p[24]; int n = 0; p[0] = 0; apnd_u(p, &n, 24, br_top + 1); h_apnd(p, &n, 24, "/"); apnd_u(p, &n, 24, pg_lines); put_str_at(W - 1 - n, H - 1, p, th->bar); }
+    if (br_focus_inp >= 0 && br_focus_inp < inp_cnt) {
+        int il = inps[br_focus_inp].line;
+        if (il >= br_top && il < br_top + H - 2) {
+            int iy = 1 + il - br_top;
+            int vlen = 0; while (inps[br_focus_inp].value[vlen]) vlen++;
+            int ix = inps[br_focus_inp].col + 1 + vlen;
+            if (ix < inps[br_focus_inp].col + 1 + inps[br_focus_inp].width && ix < W) {
+                put_at(ix, iy, '_', th->user);
+            }
+        }
+    }
     mouse_draw();
     br_dirty = 0;
 }
@@ -1667,7 +1686,7 @@ static void br_load(const char *url, int push) {
     u[k] = 0;
     for (k = 0; u[k]; k++) br_url[k] = u[k];
     br_url[k] = 0;
-    br_top = 0; br_focus = 0; br_hover = 0;
+    br_top = 0; br_focus = 0; br_hover = 0; br_focus_inp = (inp_cnt > 0) ? 0 : -1;
     if (streq(br_url, "about:start")) {
         html_render(br_start, sizeof br_start - 1, 0);
         br_say("Cravgos Web - start page");
@@ -1718,6 +1737,66 @@ static void br_back(void) {
         while (br_hist[br_hn][k]) { u[k] = br_hist[br_hn][k]; k++; }
         u[k] = 0;
         br_load(u, 0);
+    }
+}
+static void br_submit_form(int form_idx) {
+    if (form_idx < 0 || form_idx >= form_cnt) return;
+    html_form_t *f = &forms[form_idx];
+    char post_data[1024]; int pd_len = 0; post_data[0] = 0;
+    for (int i = 0; i < inp_cnt; i++) {
+        if (inps[i].form_idx == form_idx && inps[i].name[0]) {
+            if (streq(inps[i].type, "submit") && !inps[i].value[0]) continue;
+            if (pd_len > 0 && pd_len < (int)sizeof(post_data) - 1) post_data[pd_len++] = '&';
+            for (int k = 0; inps[i].name[k] && pd_len < (int)sizeof(post_data) - 1; k++) {
+                post_data[pd_len++] = inps[i].name[k];
+            }
+            if (pd_len < (int)sizeof(post_data) - 1) post_data[pd_len++] = '=';
+            for (int k = 0; inps[i].value[k] && pd_len < (int)sizeof(post_data) - 4; k++) {
+                char c = inps[i].value[k];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+                    post_data[pd_len++] = c;
+                } else if (c == ' ') {
+                    post_data[pd_len++] = '+';
+                } else {
+                    static const char hex[] = "0123456789ABCDEF";
+                    post_data[pd_len++] = '%';
+                    post_data[pd_len++] = hex[((u8)c >> 4) & 15];
+                    post_data[pd_len++] = hex[(u8)c & 15];
+                }
+            }
+        }
+    }
+    post_data[pd_len] = 0;
+    char target[384]; int tn = 0; target[0] = 0;
+    if (f->action[0]) {
+        url_resolve(br_url, f->action, target, sizeof(target));
+    } else {
+        h_apnd(target, &tn, sizeof(target), br_url);
+    }
+    if (streq(f->method, "POST")) {
+        br_say("Submitting POST form...");
+        struct hres hr;
+        int err = http_post_follow(target, "application/x-www-form-urlencoded", post_data, pd_len, &hr);
+        if (err < 0) {
+            br_page_error(http_err_str(err), target);
+        } else {
+            int k = 0; br_url[0] = 0; h_apnd(br_url, &k, sizeof(br_url), target);
+            html_render((const char *)(http_buf + hr.body_off), hr.body_len, !hr.html);
+            br_top = 0; br_focus = 0; br_focus_inp = (inp_cnt > 0) ? 0 : -1;
+            br_images();
+        }
+        br_dirty = 1;
+    } else {
+        if (pd_len > 0) {
+            int has_q = 0;
+            for (int k = 0; target[k]; k++) if (target[k] == '?') { has_q = 1; break; }
+            tn = 0; while (target[tn]) tn++;
+            if (!has_q && tn < (int)sizeof(target) - 1) target[tn++] = '?';
+            else if (has_q && tn < (int)sizeof(target) - 1) target[tn++] = '&';
+            target[tn] = 0;
+            h_apnd(target, &tn, sizeof(target), post_data);
+        }
+        br_load(target, 1);
     }
 }
 static void br_open_link(int id) {
@@ -1774,6 +1853,35 @@ static void browse(const char *start) {
             if (h != br_hover) { br_hover = h; br_dirty = 1; } else mouse_draw();
             continue;
         }
+        if (br_focus_inp >= 0 && br_focus_inp < inp_cnt) {
+            html_inp_t *cur_inp = &inps[br_focus_inp];
+            if (k == 27) { br_focus_inp = -1; br_dirty = 1; continue; }
+            if (k == '\t') { br_focus_inp = (br_focus_inp + 1) % inp_cnt; br_dirty = 1; continue; }
+            if (k == '\n') { br_submit_form(cur_inp->form_idx); continue; }
+            if (k == '\b') {
+                int l = 0; while (cur_inp->value[l]) l++;
+                if (l > 0) {
+                    cur_inp->value[l - 1] = 0;
+                    int ix = cur_inp->col + l;
+                    if (ix < W && cur_inp->line < pg_lines) pg_ch[cur_inp->line][ix] = ' ';
+                    br_dirty = 1;
+                }
+                continue;
+            }
+            if (((k >= 32 && k < 127) || (k >= 0x80 && k <= 0xFF)) && !streq(cur_inp->type, "submit")) {
+                int l = 0; while (cur_inp->value[l]) l++;
+                if (l < cur_inp->width && l < (int)sizeof(cur_inp->value) - 1) {
+                    cur_inp->value[l] = (char)k;
+                    cur_inp->value[l + 1] = 0;
+                    int ix = cur_inp->col + 1 + l;
+                    if (ix < W && cur_inp->line < pg_lines) {
+                        pg_ch[cur_inp->line][ix] = streq(cur_inp->type, "password") ? '*' : (char)k;
+                    }
+                    br_dirty = 1;
+                }
+                continue;
+            }
+        }
         if (k == 27 || k == 'q' || k == K_F1 + 9) break;
         else if (k == K_DOWN) br_top++;
         else if (k == K_UP) br_top--;
@@ -1781,7 +1889,10 @@ static void browse(const char *start) {
         else if (k == K_PGUP) br_top -= H - 3;
         else if (k == K_HOME) br_top = 0;
         else if (k == K_END) br_top = br_maxtop();
-        else if (k == '\t') { if (lk_count) { br_focus = br_focus % lk_count + 1; br_show_link(br_focus); } }
+        else if (k == '\t') {
+            if (inp_cnt) { br_focus_inp = 0; br_dirty = 1; }
+            else if (lk_count) { br_focus = br_focus % lk_count + 1; br_show_link(br_focus); }
+        }
         else if (k == '\n') { if (br_focus) br_open_link(br_focus); }
         else if (k == 'b' || k == '\b' || k == UI_RCLICK) br_back();
         else if (k == 'g') br_edit_url();
@@ -1795,8 +1906,19 @@ static void browse(const char *start) {
                 else if (ui_cx >= 15 && ui_cx <= 20) break;
                 else if (ui_cx >= 22) br_edit_url();
             } else {
-                int h = br_link_at(ui_cx, ui_cy);
-                if (h) br_open_link(h);
+                int l = br_top + ui_cy - 1;
+                if (l < pg_lines && pg_inp[l][ui_cx] > 0) {
+                    br_focus_inp = pg_inp[l][ui_cx] - 1;
+                    if (streq(inps[br_focus_inp].type, "submit")) {
+                        br_submit_form(inps[br_focus_inp].form_idx);
+                    } else {
+                        br_dirty = 1;
+                    }
+                } else {
+                    int h = br_link_at(ui_cx, ui_cy);
+                    if (h) br_open_link(h);
+                    else { br_focus_inp = -1; br_dirty = 1; }
+                }
             }
         }
         if (br_top > br_maxtop()) br_top = br_maxtop();
@@ -2985,6 +3107,23 @@ void shell_main(void) {
     }
 }
 void kmain(void) {
+    idt_init();
+    ru_init();
+    vga_font_load();
+    vga_blink_off();
+    th = &themes[3]; color = th->base;
+    pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
+    boot_tod = tod();
+    rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
+    if (!rng) rng = 1;
+    dhcp_xid ^= rng;
+    ata_init();
+    if (!disk_load()) {
+        fs_boot();
+        if (ata_present) disk_save();
+    }
+    nic_tx = e1000_send; nic_rx = e1000_recv; ms_now = now_ms;
+    nic_ok = e1000_init();
     idt_init();                                    /* первым делом: исключения больше не убивают машину */
     ru_init(); vga_font_load(); vga_blink_off();   /* кириллица и 16 цветов фона */
     th = &themes[3]; color = th->base;             /* тема amber по умолчанию */

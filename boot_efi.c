@@ -119,8 +119,24 @@ typedef struct {
     void *CloseProtocol;
     void *OpenProtocolInformation;
     void *ProtocolsPerHandle;
+    void *LocateHandleBuffer;
     EFI_STATUS (__attribute__((ms_abi)) *LocateProtocol)(const EFI_GUID *Protocol, void *Registration, void **Interface);
 } EFI_BOOT_SERVICES;
+
+typedef struct {
+    EFI_TABLE_HEADER Hdr;
+    void *GetTime;
+    void *SetTime;
+    void *GetWakeupTime;
+    void *SetWakeupTime;
+    void *SetVirtualAddressMap;
+    void *ConvertPointer;
+    void *GetVariable;
+    void *GetNextVariableName;
+    void *SetVariable;
+    void *GetNextHighMonotonicCount;
+    void (__attribute__((ms_abi)) *ResetSystem)(int ResetType, EFI_STATUS ResetStatus, UINTN DataSize, void *ResetData);
+} EFI_RUNTIME_SERVICES;
 
 typedef struct {
     EFI_TABLE_HEADER Hdr;
@@ -132,7 +148,7 @@ typedef struct {
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
     EFI_HANDLE StandardErrorHandle;
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
-    void *RuntimeServices;
+    EFI_RUNTIME_SERVICES *RuntimeServices;
     EFI_BOOT_SERVICES *BootServices;
     UINTN NumberOfTableEntries;
     void *ConfigurationTable;
@@ -193,7 +209,8 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_T
 
     /* Поиск GOP (Graphics Output Protocol) */
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
-    EFI_STATUS st = SystemTable->BootServices->LocateProtocol(&gop_guid, 0, (void **)&gop);
+    EFI_STATUS st = (SystemTable->BootServices && SystemTable->BootServices->LocateProtocol) ?
+        SystemTable->BootServices->LocateProtocol(&gop_guid, 0, (void **)&gop) : 1;
     if (st == EFI_SUCCESS && gop && gop->Mode && gop->Mode->Info) {
         out->SetAttribute(out, 0x0A); /* Зеленый */
         out->OutputString(out, u"[ OK ] UEFI Graphics Output Protocol (GOP) detected!\r\n");
@@ -219,14 +236,27 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_T
     }
 
     out->SetAttribute(out, 0x0E);
-    out->OutputString(out, u"Cravgos UEFI environment initialized successfully.\r\n");
+    out->OutputString(out, u"Cravgos UEFI 64-bit environment initialized successfully.\r\n");
+    out->SetAttribute(out, 0x0B);
+    out->OutputString(out, u"Hardware Status: x86_64 Long Mode active, GOP Ready.\r\n\r\n");
     out->SetAttribute(out, 0x07);
-    out->OutputString(out, u"Press any key to continue...\r\n");
+    out->OutputString(out, u"Notice: For the interactive VGA console environment, select\r\n");
+    out->OutputString(out, u"'Legacy BIOS / CSM Boot' in your motherboard boot menu (F8/F11/F12).\r\n\r\n");
+    out->OutputString(out, u"Press [Enter] or [Space] to exit to boot manager, or [R] to reboot...\r\n");
 
-    /* Ожидание клавиши */
+    /* Ожидание клавиши с поддержкой перезагрузки */
     if (SystemTable->ConIn) {
         EFI_INPUT_KEY key;
-        while (SystemTable->ConIn->ReadKeyStroke(SystemTable->ConIn, &key) != EFI_SUCCESS) {
+        while (SystemTable->ConIn->ReadKeyStroke(SystemTable->ConIn, &key) == EFI_SUCCESS) {}
+        while (1) {
+            if (SystemTable->ConIn->ReadKeyStroke(SystemTable->ConIn, &key) == EFI_SUCCESS) {
+                if (key.UnicodeChar == u'r' || key.UnicodeChar == u'R') {
+                    if (SystemTable->RuntimeServices && SystemTable->RuntimeServices->ResetSystem) {
+                        SystemTable->RuntimeServices->ResetSystem(1 /* EfiResetWarm */, EFI_SUCCESS, 0, 0);
+                    }
+                }
+                break;
+            }
             __asm__ volatile("pause");
         }
     }

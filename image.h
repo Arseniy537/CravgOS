@@ -12,6 +12,10 @@
 static u32 im_r[IM_MAXW * IM_MAXH] XBSS, im_g[IM_MAXW * IM_MAXH] XBSS, im_b[IM_MAXW * IM_MAXH] XBSS;
 static u16 im_n[IM_MAXW * IM_MAXH] XBSS;
 static int im_w, im_h, im_ow, im_oh;
+static u16 im_map_x[4096] XBSS;
+static u16 im_map_y[4096] XBSS;
+static u8 pal_lut[16][16][16] XBSS;
+static int pal_lut_ready;
 
 static int im_setup(int w, int h) {
     if (w < 1 || h < 1 || w > 16384 || h > 16384) return -2;
@@ -22,12 +26,18 @@ static int im_setup(int w, int h) {
     if (ow < 1) ow = 1;
     if (oh < 1) oh = 1;
     im_ow = ow; im_oh = oh;
+    int lim_w = w < 4096 ? w : 4096;
+    for (int x = 0; x < lim_w; x++) im_map_x[x] = (u16)((u32)x * ow / w);
+    int lim_h = h < 4096 ? h : 4096;
+    for (int y = 0; y < lim_h; y++) im_map_y[y] = (u16)((u32)y * oh / h);
     for (int i = 0; i < ow * oh; i++) { im_r[i] = im_g[i] = im_b[i] = 0; im_n[i] = 0; }
     return 0;
 }
 static inline void im_px(int x, int y, int r, int g, int b) {
-    if (x < 0 || y < 0 || x >= im_w || y >= im_h) return;
-    int i = (int)((u32)y * im_oh / im_h) * im_ow + (int)((u32)x * im_ow / im_w);
+    if ((u32)x >= (u32)im_w || (u32)y >= (u32)im_h) return;
+    int mx = (x < 4096) ? im_map_x[x] : (int)((u32)x * im_ow / im_w);
+    int my = (y < 4096) ? im_map_y[y] : (int)((u32)y * im_oh / im_h);
+    int i = my * im_ow + mx;
     im_r[i] += r; im_g[i] += g; im_b[i] += b;
     if (im_n[i] < 65535) im_n[i]++;
 }
@@ -225,16 +235,20 @@ static void pn_sink(u8 b) {
     u8 *cur = pn_row[pn_cur], *prv = pn_row[pn_cur ^ 1];
     const u8 *s = pn_raw + 1;
     int bpp = pn_bpp;
-    for (int i = 0; i < pn_rb; i++) {
-        int a = i >= bpp ? cur[i - bpp] : 0, up = prv[i], c = i >= bpp ? prv[i - bpp] : 0, x = s[i];
-        switch (ft) {
-            case 1: x += a; break;
-            case 2: x += up; break;
-            case 3: x += (a + up) >> 1; break;
-            case 4: { int p = a + up - c, pa = p > a ? p - a : a - p, pb = p > up ? p - up : up - p, pc = p > c ? p - c : c - p;
-                      x += (pa <= pb && pa <= pc) ? a : (pb <= pc ? up : c); break; }
+    if (ft == 0) {
+        for (int i = 0; i < pn_rb; i++) cur[i] = s[i];
+    } else {
+        for (int i = 0; i < pn_rb; i++) {
+            int a = i >= bpp ? cur[i - bpp] : 0, up = prv[i], c = i >= bpp ? prv[i - bpp] : 0, x = s[i];
+            switch (ft) {
+                case 1: x += a; break;
+                case 2: x += up; break;
+                case 3: x += (a + up) >> 1; break;
+                case 4: { int p = a + up - c, pa = p > a ? p - a : a - p, pb = p > up ? p - up : up - p, pc = p > c ? p - c : c - p;
+                          x += (pa <= pb && pa <= pc) ? a : (pb <= pc ? up : c); break; }
+            }
+            cur[i] = (u8)x;
         }
-        cur[i] = (u8)x;
     }
     pn_emit(cur, pn_y);
     pn_cur ^= 1; pn_rp = 0;
@@ -342,6 +356,18 @@ static int ij_block(int ci, short *F, int *dcout, int skipac) {
     return 0;
 }
 static void ij_idct(const short *F, u8 *out, int stride) {
+    int has_ac = 0;
+    for (int i = 1; i < 64; i++) { if (F[i]) { has_ac = 1; break; } }
+    if (!has_ac) {
+        int s = ((int)F[0] + 4) >> 3;
+        s += 128;
+        u8 val = (u8)(s < 0 ? 0 : s > 255 ? 255 : s);
+        for (int y = 0; y < 8; y++) {
+            u8 *row = out + y * stride;
+            for (int x = 0; x < 8; x++) row[x] = val;
+        }
+        return;
+    }
     int tmp[64];
     for (int v = 0; v < 8; v++)
         for (int x = 0; x < 8; x++) {
@@ -610,14 +636,26 @@ static int gif_decode(const u8 *d, int len) {
 static const u8 im_pal[16][3] = {{0,0,0},{0,0,170},{0,170,0},{0,170,170},{170,0,0},{170,0,170},{170,85,0},{170,170,170},
     {85,85,85},{85,85,255},{85,255,85},{85,255,255},{255,85,85},{255,85,255},{255,255,85},{255,255,255}};
 static const signed char im_bay[4][4] = {{-24,8,-18,14},{20,-12,26,-4},{-14,18,-20,12},{30,-2,24,-8}};
+static void pal_lut_init(void) {
+    if (pal_lut_ready) return;
+    for (int r = 0; r < 16; r++)
+        for (int g = 0; g < 16; g++)
+            for (int b = 0; b < 16; b++) {
+                int R = r * 17, G = g * 17, B = b * 17;
+                int best = 0, bd = 1 << 30;
+                for (int i = 0; i < 16; i++) {
+                    int dr = R - im_pal[i][0], dg = G - im_pal[i][1], db = B - im_pal[i][2];
+                    int dd = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+                    if (dd < bd) { bd = dd; best = i; }
+                }
+                pal_lut[r][g][b] = (u8)best;
+            }
+    pal_lut_ready = 1;
+}
 static int im_nearest(int r, int g, int b) {
-    int best = 0, bd = 1 << 30;
-    for (int i = 0; i < 16; i++) {
-        int dr = r - im_pal[i][0], dg = g - im_pal[i][1], db = b - im_pal[i][2];
-        int dd = dr * dr * 3 + dg * dg * 4 + db * db * 2;
-        if (dd < bd) { bd = dd; best = i; }
-    }
-    return best;
+    if (!pal_lut_ready) pal_lut_init();
+    int ri = (r >> 4) & 15, gi = (g >> 4) & 15, bi = (b >> 4) & 15;
+    return pal_lut[ri][gi][bi];
 }
 static int img_decode(const u8 *d, int len) {
     if (len > 8 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') return png_decode(d, len);

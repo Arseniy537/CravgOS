@@ -267,7 +267,7 @@ static int http_tls_send(const u8 *d, int n) { return tcp_send(d, n); }
 static int http_tls_dead(void) { return tcp_rst || tcp_fin || tcp_state == TCP_CLOSED; }
 #endif
 
-static int http_fetch(const char *url, struct hres *r) {
+static int http_fetch_req(const char *url, const char *method, const char *ctype, const char *req_body, int req_body_len, struct hres *r) {
     char host[128], path[400];
     int https, port;
     r->status = 0; r->html = 0; r->body_off = r->body_len = r->truncated = 0; r->loc[0] = r->ctype[0] = 0;
@@ -295,8 +295,11 @@ static int http_fetch(const char *url, struct hres *r) {
     }
 #endif
     char req[800]; int n = 0;
-    h_apnd(req, &n, sizeof req, "GET "); h_apnd(req, &n, sizeof req, path);
-    h_apnd(req, &n, sizeof req, " HTTP/1.0\r\nHost: "); h_apnd(req, &n, sizeof req, host);
+    h_apnd(req, &n, sizeof req, method ? method : "GET");
+    h_apnd(req, &n, sizeof req, " ");
+    h_apnd(req, &n, sizeof req, path);
+    h_apnd(req, &n, sizeof req, " HTTP/1.0\r\nHost: ");
+    h_apnd(req, &n, sizeof req, host);
     if ((!https && port != 80) || (https && port != 443)) {
         char ps[12]; int pi = 0;
         ps[pi++] = ':';
@@ -306,14 +309,32 @@ static int http_fetch(const char *url, struct hres *r) {
         ps[pi] = 0;
         h_apnd(req, &n, sizeof req, ps);
     }
-    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.7.0; x86_64)\r\nAccept: ");
+    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.7.1; x86_64)\r\nAccept: ");
     h_apnd(req, &n, sizeof req, http_accept);
+    if (ctype && *ctype) {
+        h_apnd(req, &n, sizeof req, "\r\nContent-Type: ");
+        h_apnd(req, &n, sizeof req, ctype);
+    }
+    if (req_body && req_body_len > 0) {
+        h_apnd(req, &n, sizeof req, "\r\nContent-Length: ");
+        char bls[16]; int bli = 0;
+        int bv = req_body_len, bdiv = 10000;
+        while (bdiv > 1 && bv / bdiv == 0) bdiv /= 10;
+        while (bdiv >= 1) { bls[bli++] = '0' + (bv / bdiv); bv %= bdiv; bdiv /= 10; }
+        bls[bli] = 0;
+        h_apnd(req, &n, sizeof req, bls);
+    }
     h_apnd(req, &n, sizeof req, "\r\nConnection: close\r\n\r\n");
 #ifdef HTTP_TLS
-    if (https) { if (tls_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; } }
-    else
+    if (https) {
+        if (tls_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; }
+        if (req_body && req_body_len > 0) { if (tls_send((const u8 *)req_body, req_body_len) < 0) { tcp_close(); return HE_SEND; } }
+    } else
 #endif
-    if (tcp_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; }
+    {
+        if (tcp_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; }
+        if (req_body && req_body_len > 0) { if (tcp_send((const u8 *)req_body, req_body_len) < 0) { tcp_close(); return HE_SEND; } }
+    }
     u32 t_start = ms_now(), t_last = t_start;
     int last_len = 0, hdr_end = -1, clen = -1, scan = 0, rl = 0;
     for (;;) {
@@ -374,6 +395,36 @@ static int http_fetch(const char *url, struct hres *r) {
     r->html = is_html ? 1 : (is_text ? 0 : -1);
     return 0;
 }
+static int http_fetch(const char *url, struct hres *r) {
+    return http_fetch_req(url, "GET", 0, 0, 0, r);
+}
+static int http_post(const char *url, const char *ctype, const char *body, int body_len, struct hres *r) {
+    return http_fetch_req(url, "POST", ctype, body, body_len, r);
+}
+static int http_post_follow(const char *url, const char *ctype, const char *body, int body_len, struct hres *r) {
+    char cur[256];
+    int k = 0;
+    while (url[k] && k < 255) { cur[k] = url[k]; k++; }
+    cur[k] = 0;
+    int is_post = 1;
+    for (int hop = 0; hop < 6; hop++) {
+        int e = is_post ? http_fetch_req(cur, "POST", ctype, body, body_len, r) : http_fetch(cur, r);
+        for (k = 0; cur[k]; k++) r->url[k] = cur[k];
+        r->url[k] = 0;
+        if (e < 0) return e;
+        if (r->status >= 300 && r->status < 400 && r->loc[0]) {
+            char nx[256];
+            if (url_resolve(cur, r->loc, nx, sizeof nx) < 0) return HE_URL;
+            for (k = 0; nx[k]; k++) cur[k] = nx[k];
+            cur[k] = 0;
+            if (r->status == 301 || r->status == 302 || r->status == 303) is_post = 0;
+            continue;
+        }
+        return 0;
+    }
+    return HE_LOOP;
+}
+
 static int http_get_follow(const char *url, struct hres *r) {
     char cur[256];
     int k = 0;

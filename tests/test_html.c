@@ -74,6 +74,15 @@ int main(void) {
     for (int i = 0; i < 20000 && n < 199990; i++) n += sprintf(huge + n, "<p>line %d</p>", i);
     html_render(huge, n, 0);
     CHECK(pg_lines <= PG_MAXL && pg_lines > 2000);
+    /* формы и поля ввода */
+    const char *h_form = "<form action=\"/search\" method=\"GET\"><input type=\"text\" name=\"q\" value=\"cravgos\" size=\"15\">"
+                         "<input type=\"submit\" value=\"Search\"></form>";
+    html_render(h_form, strlen(h_form), 0);
+    CHECK(form_cnt == 1 && strcmp(forms[0].action, "/search") == 0 && strcmp(forms[0].method, "GET") == 0);
+    CHECK(inp_cnt == 2);
+    CHECK(strcmp(inps[0].name, "q") == 0 && strcmp(inps[0].value, "cravgos") == 0 && inps[0].width == 15);
+    CHECK(strcmp(inps[1].type, "submit") == 0 && strcmp(inps[1].value, "Search") == 0);
+    CHECK(pg_inp[0][1] == 1 && pg_inp[0][2] == 1);
     printf("html tests OK\n");
     return 0;
 }

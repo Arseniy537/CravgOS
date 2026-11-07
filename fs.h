@@ -14,9 +14,13 @@
 #define FS_ENOTEMPTY -7
 #define FS_EBUSY    -8
 
+#ifndef XBSS
+#define XBSS
+#endif
+
 struct fsnode { char name[FS_NAME]; u8 used, dir, parent; u16 size; };
 static struct fsnode fsn[FS_MAXN];
-static u8 fsdata[FS_MAXN][FS_FSZ];
+static u8 fsdata[FS_MAXN][FS_FSZ] XBSS;
 static int fs_cwd;
 
 static int fs_scmp(const char *a, int alen, const char *b) {
