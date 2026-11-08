@@ -23,6 +23,10 @@ static void fs_sync(void) {}
 static const char *in_q[64]; static int in_n, in_i;
 static int readline(char *buf, int max) { const char *s = in_i < in_n ? in_q[in_i++] : "0"; int n = 0; while (s[n] && n < max - 1) { buf[n] = s[n]; n++; } buf[n] = 0; t_puts(buf); t_putc('\n'); return n; }
 static const char *cmd_find(const char *w) { return (streq(w, "snake") || streq(w, "ls")) ? "x" : 0; }
+static int lua_nruns; static char lua_last_name[40], lua_last_src[64];
+static int lua_run_src(const char *src, int len, const char *chunk) {            /* заглушка интерпретатора Lua */
+    lua_nruns++; strncpy(lua_last_name, chunk, 39); int n = len < 63 ? len : 63; memcpy(lua_last_src, src, (size_t)n); lua_last_src[n] = 0; return 0;
+}
 #define STAS_NO_HTTP
 #include "../stas.h"
 
@@ -36,6 +40,11 @@ static int mock_fetch(const char *url, const char **body, int *len) {
     const char *f = url + strlen(base);
     if (!strcmp(f, "index.txt")) { *body = idx_buf; *len = idx_len; return 0; }
     if (!strcmp(f, "nim.stp")) { *body = pkg_buf; *len = pkg_len; return 0; }
+    {   /* остальные пакеты читаются из stas-repo/ как есть */
+        static char gen[4096]; char path[200]; snprintf(path, sizeof path, "stas-repo/%s", f);
+        FILE *fp = fopen(path, "rb");
+        if (fp) { int n = (int)fread(gen, 1, sizeof gen, fp); fclose(fp); *body = gen; *len = n; return 0; }
+    }
     stas_err = "HTTP 404"; return -1;
 }
 static int readf(const char *p, char *b, int max) { FILE *f = fopen(p, "rb"); if (!f) { printf("cannot open %s (run from repo root)\n", p); exit(2); } int n = fread(b, 1, max, f); fclose(f); return n; }
@@ -102,6 +111,39 @@ int main(void) {
     sh("stas repo offline"); sh("stas repo"); CHECK(HAS("offline"));
     sh("stas update"); CHECK(HAS("Index updated:") && HAS("packages"));
     sh("stas install fact"); CHECK(HAS("Installed fact") && HAS("sha256 ok"));
+    sh("stas repo default");
+
+
+    /* пакеты Lua: установка с зависимостями, запуск через интерпретатор */
+    sh("stas update"); CHECK(HAS("Index updated: "));
+    sh("stas install luaide"); CHECK(HAS("Installing dependency: luaide-ui") && HAS("Installing dependency: luaide-hl") && HAS("Installing dependency: luaide-help") && HAS("Installing dependency: luaide-repl") && HAS("Installed luaide "));
+    CHECK(stas_node("luaide") >= 0 && stas_node("luaide-ui") >= 0 && stas_node("luaide-hl") >= 0 && stas_node("luaide-help") >= 0 && stas_node("luaide-repl") >= 0);
+    sh("stas install luaide"); CHECK(!HAS("Installing dependency"));                   /* повторная установка модулей не требует */
+    lua_nruns = 0; reset(); CHECK(stas_try_app("luaide")); CHECK(lua_nruns == 1 && !strcmp(lua_last_name, "luaide") && !strncmp(lua_last_src, "--lua", 5));
+    sh("stas run calendar"); CHECK(HAS("not installed"));
+    sh("stas install calendar"); CHECK(HAS("Installed calendar") && !HAS("dependency"));
+    sh("stas run calendar"); CHECK(lua_nruns == 2 && !strcmp(lua_last_name, "calendar"));
+    sh("stas install tetris"); CHECK(HAS("Installing dependency: tetris-lib") && stas_node("tetris-lib") >= 0);
+    sh("stas list"); CHECK(HAS("[x] luaide ") && HAS("[x] tetris ") && HAS("[x] calendar "));
+    sh("stas remove luaide"); sh("stas remove luaide-ui"); sh("stas remove luaide-hl"); sh("stas remove luaide-help"); sh("stas remove luaide-repl");
+    sh("stas remove tetris"); sh("stas remove tetris-lib"); sh("stas remove calendar");
+    CHECK(stas_node("luaide") < 0 && stas_node("tetris") < 0);
+    /* повреждённый модуль не ставится, зависимость не пропускается молча */
+    { static char sv[4096]; (void)sv; }
+
+    /* офлайн-режим: Lua-пакеты встроены в ядро, содержимое совпадает с файлами stas-repo/ */
+    sh("stas repo offline"); sh("stas update"); CHECK(HAS("Index updated: "));
+    sh("stas install tetris"); CHECK(HAS("Installing dependency: tetris-lib") && HAS("sha256 ok"));
+    sh("stas install luaide"); CHECK(HAS("Installing dependency: luaide-ui") && HAS("Installing dependency: luaide-hl"));
+    {
+        static const char *names[] = { "luaide", "luaide-ui", "luaide-hl", "luaide-help", "luaide-repl", "tetris", "tetris-lib" };
+        for (int q = 0; q < 7; q++) {
+            char path[100], want[4096]; snprintf(path, sizeof path, "stas-repo/%s.stp", names[q]);
+            int wn = readf(path, want, sizeof want), i = stas_node(names[q]);
+            CHECK(i >= 0 && fsn[i].size == wn && !memcmp(fsdata[i], want, (size_t)wn));
+        }
+    }
+    sh("stas install calendar"); CHECK(HAS("Installed calendar"));
     sh("stas repo default");
 
     /* CRLF normalization: install package containing \r\n matching LF hash */

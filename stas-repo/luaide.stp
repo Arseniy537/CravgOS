@@ -1,0 +1,40 @@
+--lua
+--needs luaide-ui luaide-help luaide-repl
+-- luaide - Lua IDE: files in /lua, edit, run, check, console, help
+local U = dofile("/apps/luaide-ui")
+local help = dofile("/apps/luaide-help")
+local repl = dofile("/apps/luaide-repl")
+fs.mkdir("/lua")
+term.cursor(false)
+while true do
+  local fl = U.files()
+  if U.sel > #fl then U.sel = #fl end
+  if U.sel < 1 then U.sel = 1 end
+  U.draw(fl)
+  local k, f = term.getkey(), fl[U.sel]
+  if k == 113 or k == 27 then break
+  elseif k == term.UP and U.sel > 1 then U.sel = U.sel - 1
+  elseif k == term.DOWN then U.sel = U.sel + 1
+  elseif k == 107 then repl() term.cursor(false)
+  elseif k == 104 then help()
+  elseif k == 110 then
+    local n = U.ask("New file name: ")
+    if #n > 0 then
+      if n:sub(-4) ~= ".lua" then n = n .. ".lua" end
+      if #n > 15 or fs.exists("/lua/" .. n) then U.msg = "bad or existing name: " .. n
+      else
+        fs.write("/lua/" .. n, 'print("Hello, Cravgos!")\n') edit("/lua/" .. n)
+        for i, v in ipairs(U.files()) do if v == n then U.sel = i end end
+      end
+    end
+  elseif f then
+    if k == 10 or k == 101 then edit("/lua/" .. f)
+    elseif k == 120 then edit("/lua/" .. f) U.run(f)
+    elseif k == 114 then U.run(f)
+    elseif k == 99 then
+      local ok, e = load(fs.read("/lua/" .. f) or "", "=" .. f)
+      U.msg = ok and "syntax OK: " .. f or e
+    elseif k == 100 and U.ask("Delete " .. f .. "? (y) ") == "y" then fs.remove("/lua/" .. f) U.msg = "deleted " .. f end
+  end
+end
+term.color(7, 0) term.clear() term.cursor(true)

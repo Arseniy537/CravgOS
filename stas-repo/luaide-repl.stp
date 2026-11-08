@@ -1,0 +1,25 @@
+--lua
+-- luaide-repl - interactive Lua console (module of luaide)
+return function()
+  term.color(7, 0) term.clear() term.cursor(true)
+  term.write("Lua console: type an expression or a statement, 'exit' quits.\n")
+  while true do
+    term.color(10, 0) term.write("> ") term.color(7, 0)
+    local s = term.readline()
+    if s == "exit" or s == "quit" then break end
+    if #s > 0 then
+      local f, e = load("return " .. s, "=console")
+      if not f then f, e = load(s, "=console") end
+      if not f then
+        term.color(12, 0) term.write(e, "\n")
+      else
+        local r = {pcall(f)}
+        if not r[1] then term.color(12, 0) term.write(r[2], "\n")
+        else
+          for i = 2, #r do term.write(tostring(r[i]), "  ") end
+          if #r > 1 then term.write("\n") end
+        end
+      end
+    end
+  end
+end

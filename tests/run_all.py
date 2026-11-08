@@ -5,7 +5,7 @@ import subprocess, os, sys
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(root)
 
-tests = ['test_fs', 'test_net', 'test_html', 'test_http', 'test_crypto', 'test_stas']
+tests = ['test_fs', 'test_net', 'test_html', 'test_http', 'test_crypto', 'test_stas', 'test_lua', 'test_lua_apps']
 failed = 0
 for t in tests:
     print(f"=== Running {t} ===")

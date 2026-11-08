@@ -1,0 +1,47 @@
+--lua
+--needs luaide-hl
+-- luaide-ui - screen and file helpers for luaide (module)
+local hl = dofile("/apps/luaide-hl")
+local U = {sel = 1, msg = "Enter: edit  r: run  x: edit+run  c: check  n: new  d: delete  k: console  h: help  q: quit"}
+function U.files()
+  local r = {}
+  for _, n in ipairs(fs.list("/lua")) do if n:sub(-4) == ".lua" then r[#r + 1] = n end end
+  table.sort(r)
+  return r
+end
+function U.ask(p)
+  term.color(15, 1) term.fill(0, 24, 80, 1, " ") term.put(1, 24, p) term.at(2 + #p, 24) term.cursor(true)
+  local s = term.readline() term.cursor(false)
+  return s
+end
+function U.draw(fl)
+  term.color(7, 0) term.clear()
+  term.color(14, 1) term.fill(0, 0, 80, 1, " ") term.put(1, 0, "Lua IDE   /lua   " .. #fl .. " files")
+  term.color(8, 0)
+  for y = 1, 23 do term.put(19, y, "|") end
+  for i, n in ipairs(fl) do
+    if i < 23 then
+      if i == U.sel then term.color(0, 11) else term.color(7, 0) end
+      term.put(1, i, " " .. n .. string.rep(" ", 16 - #n))
+    end
+  end
+  local src = fl[U.sel] and fs.read("/lua/" .. fl[U.sel]) or ""
+  local y, p = 1, 1
+  while y < 23 do
+    local e = src:find("\n", p, true)
+    term.color(8, 0) term.put(20, y, string.format("%3d", y))
+    hl(24, y, src:sub(p, (e or #src + 1) - 1), 55)
+    if not e then break end
+    p, y = e + 1, y + 1
+  end
+  term.color(14, 0) term.fill(0, 24, 80, 1, " ") term.put(1, 24, U.msg)
+end
+function U.run(f)
+  term.color(7, 0) term.clear() term.cursor(true)
+  local ok, e = pcall(dofile, "/lua/" .. f)
+  term.color(ok and 10 or 12, 0) term.cursor(true)
+  term.write("\n-- ", ok and "finished" or e, " -- press any key")
+  term.getkey() term.cursor(false)
+  U.msg = (ok and "ran " or "error in ") .. f
+end
+return U

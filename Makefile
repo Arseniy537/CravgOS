@@ -18,8 +18,15 @@ bootx64.efi: boot_efi.c
 
 boot_iso.o: boot_iso.s cyrfont.inc
 	as $< -o $@
-kernel.o: kernel.c stas.h fs.h net.h http.h html.h crypto.h tls.h image.h cyrfont.h
+kernel.o: kernel.c lua.h stas.h stas_lua_pkgs.h fs.h net.h http.h html.h crypto.h tls.h image.h cyrfont.h
 	gcc $(CFLAGS) -c $< -o $@
+# Lua-пакеты из stas-repo/ встраиваются в ядро для офлайн-режима (stas repo offline)
+stas_lua_pkgs.h: tools/stas_embed.py $(wildcard stas-repo/*.stp)
+	$(PYTHON) tools/stas_embed.py
+# после правок пакетов stas: пересобрать index.txt и встраиваемые копии
+repo:
+	$(PYTHON) tools/stas_mkrepo.py stas-repo
+	$(PYTHON) tools/stas_embed.py
 cravgos.elf: boot_iso.o kernel.o linker_iso.ld
 	ld $(LDFLAGS) -T linker_iso.ld -o $@ boot_iso.o kernel.o
 cravgos.img: cravgos.elf

@@ -1,0 +1,55 @@
+--lua
+--needs tetris-lib
+-- tetris - falling blocks: arrows, space drops, p pause, q quit
+local G = dofile("/apps/tetris-lib")
+local CL = G.CL
+G.hi = tonumber(fs.read("/lua/.tetris") or "") or 0
+local function draw()
+  for y = 0, 19 do for x = 0, 9 do
+    local v = G.B[y * 10 + x]
+    term.color(v and CL[v] or 8, 0) term.put(31 + x * 2, 2 + y, v and "[]" or " .")
+  end end
+  term.color(CL[G.t], 0)
+  for i = 1, 8, 2 do
+    local b = G.py + G.c[i + 1]
+    if b >= 0 then term.put(31 + (G.px + G.c[i]) * 2, 2 + b, "[]") end
+  end
+end
+local function lock()
+  G.lock() G.info()
+  if G.dead then fs.write("/lua/.tetris", G.hi .. "") end
+end
+term.cursor(false) term.color(7, 0) term.clear()
+term.color(15, 0)
+for y = 0, 19 do term.put(30, 2 + y, "|") term.put(51, 2 + y, "|") end
+term.put(30, 22, "+--------------------+")
+term.put(56, 10, "NEXT") term.put(56, 18, "arrows space p q")
+G.new() G.info()
+local last, dirty = os.ms(), true
+while true do
+  local k = term.key()
+  if k == 113 or k == 27 then break end
+  if G.dead then
+    term.color(15, 4) term.put(33, 10, " GAME OVER - Enter ")
+    if k == 10 then term.color(7, 0) term.clear() G.new() G.info() dirty = true end
+  elseif k then
+    if k == term.LEFT and G.fits(G.c, G.px - 1, G.py) then G.px = G.px - 1
+    elseif k == term.RIGHT and G.fits(G.c, G.px + 1, G.py) then G.px = G.px + 1
+    elseif k == term.UP then G.rot()
+    elseif k == term.DOWN and G.fits(G.c, G.px, G.py + 1) then G.py = G.py + 1 G.sc = G.sc + 1
+    elseif k == 32 then
+      while G.fits(G.c, G.px, G.py + 1) do G.py = G.py + 1 G.sc = G.sc + 2 end
+      lock()
+    elseif k == 112 then term.getkey() end
+    dirty = true
+  end
+  local now = os.ms()
+  if not G.dead and now - last >= math.max(80, 600 - (G.ln // 10) * 50) then
+    last = now
+    if G.fits(G.c, G.px, G.py + 1) then G.py = G.py + 1 else lock() end
+    dirty = true
+  end
+  if dirty then draw() dirty = false end
+  os.sleep(10)
+end
+term.color(7, 0) term.clear() term.cursor(true)

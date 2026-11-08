@@ -1,0 +1,56 @@
+--lua
+-- tetris-lib - game logic for tetris (module, installed with it)
+local S = {{-1,0,0,0,1,0,2,0},{0,0,1,0,0,1,1,1},{-1,0,0,0,1,0,0,1},{0,0,1,0,-1,1,0,1},{-1,0,0,0,0,1,1,1},{-1,0,0,0,1,0,1,1},{-1,0,0,0,1,0,-1,1}}
+local G = {B = {}, S = S, CL = {11,14,13,10,12,9,6}, sc = 0, ln = 0, hi = 0, dead = false}
+function G.fits(s, x, y)
+  for i = 1, 8, 2 do
+    local a, b = x + s[i], y + s[i + 1]
+    if a < 0 or a > 9 or b > 19 or (b >= 0 and G.B[b * 10 + a]) then return false end
+  end
+  return true
+end
+function G.spawn()
+  G.t = G.nx or math.random(7) G.nx = math.random(7)
+  G.c = S[G.t] G.px, G.py = 4, 0
+  if not G.fits(G.c, G.px, G.py) then G.dead = true end
+end
+function G.new()
+  G.B, G.sc, G.ln, G.dead, G.nx = {}, 0, 0, false, nil
+  G.spawn()
+end
+function G.rot()
+  local r, c = {}, G.c
+  for i = 1, 8, 2 do r[i] = -c[i + 1] r[i + 1] = c[i] end
+  for _, dx in ipairs({0, -1, 1, -2, 2}) do
+    if G.fits(r, G.px + dx, G.py) then G.c = r G.px = G.px + dx return end
+  end
+end
+function G.lock()
+  local B, c = G.B, G.c
+  for i = 1, 8, 2 do
+    local a, b = G.px + c[i], G.py + c[i + 1]
+    if b < 0 then G.dead = true else B[b * 10 + a] = G.t end
+  end
+  local n, y = 0, 19
+  while y >= 0 do
+    local full = true
+    for x = 0, 9 do if not B[y * 10 + x] then full = false break end end
+    if full then
+      n = n + 1
+      for yy = y, 1, -1 do for x = 0, 9 do B[yy * 10 + x] = B[(yy - 1) * 10 + x] end end
+      for x = 0, 9 do B[x] = nil end
+    else y = y - 1 end
+  end
+  G.sc = G.sc + ({0,100,300,500,800})[n + 1] * (G.ln // 10 + 1)
+  G.ln = G.ln + n
+  if G.sc > G.hi then G.hi = G.sc end
+  G.spawn()
+end
+function G.info()
+  term.color(7, 0)
+  local v = {G.sc, G.ln, G.hi, G.ln // 10 + 1}
+  for i, n in ipairs({"SCORE", "LINES", "BEST ", "LEVEL"}) do term.put(56, 3 + i, n .. " " .. v[i] .. "      ") end
+  term.color(G.CL[G.nx], 0) term.fill(58, 12, 8, 3, " ")
+  for i = 1, 8, 2 do term.put(60 + S[G.nx][i] * 2, 13 + S[G.nx][i + 1], "[]") end
+end
+return G

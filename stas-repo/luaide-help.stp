@@ -1,0 +1,35 @@
+--lua
+-- luaide-help - Lua reference pages (module of luaide)
+local P = {[[
+LUA IN CRAVGOS (integer subset: no floats; "/" divides integers like "//")
+
+ print(...) tostring tonumber type pairs ipairs next pcall error assert
+ load(src) dofile(path) setmetatable(t, {__index = ...}) collectgarbage()
+ string: len sub upper lower rep byte char find (plain text) format reverse
+ table:  insert remove concat sort unpack
+ math:   floor abs max min random(n) sqrt
+ not supported: match gsub gmatch, goto, "...", coroutines
+ Esc stops a program that computes for a long time without reading keys.
+]], [[
+TERMINAL
+ term.clear()  term.at(x, y)  term.write(...)  term.put(x, y, text)
+ term.fill(x, y, w, h, ch)  term.color(fg, bg)  term.cursor(on)  term.size()
+ term.key() -> code or nil     term.getkey() waits     term.readline() -> text
+ keys: term.UP DOWN LEFT RIGHT ESC ENTER BS TAB DEL HOME END PGUP PGDN F1..F10
+
+SYSTEM
+ os.ms()  os.sleep(ms)  os.time()  os.date() -> year month day hour min sec wday
+ fs.list(dir) read(path) write(path, text) append remove exists isdir mkdir
+ files are written only under /lua, up to 2048 bytes each
+ edit(path) opens the built-in text editor
+]]}
+return function()
+  for n, text in ipairs(P) do
+    term.color(7, 0) term.clear()
+    term.color(14, 1) term.fill(0, 0, 80, 1, " ") term.put(1, 0, "Lua reference " .. n .. "/" .. #P)
+    term.color(7, 0) term.at(0, 2) term.write(text)
+    term.color(8, 0) term.put(1, 24, "any key: next page, q: close")
+    local k = term.getkey()
+    if k == 113 or k == 27 then return end
+  end
+end

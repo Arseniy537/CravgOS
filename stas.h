@@ -29,6 +29,7 @@ static const char *stas_err;
 static int stas_http_fetch(const char *url, const char **body, int *len);
 static int (*stas_fetch)(const char *url, const char **body, int *len) = stas_http_fetch;
 
+#include "stas_lua_pkgs.h"
 static const char STAS_OFFLINE_INDEX[] =
     "bench aef6d32dc1ad8bf1a1c902ac8baf446b1ef31690f2da238826d547f7db584ec3 402 CPU performance benchmark in stas\n"
     "dice b13b8850fb694b72cca438ccae1ec3d6193c780c1e40fa52edb988d41874a746 846 Roll the dice against the computer!\n"
@@ -431,7 +432,13 @@ static int stas_get(const char *file, const char **b, int *n) {
     char url[256], repo[200]; int k = 0; url[0] = 0;
     stas_repo_get(repo, sizeof repo);
     if (streq(repo, "offline") || streq(repo, "builtin")) {
-        if (streq(file, "index.txt")) { *b = STAS_OFFLINE_INDEX; *n = slen(*b); return 0; }
+        if (streq(file, "index.txt")) {
+            static char off_idx[FS_FSZ + 1]; int m = 0; off_idx[0] = 0;
+            stas_cat(off_idx, &m, sizeof off_idx, STAS_OFFLINE_INDEX); stas_cat(off_idx, &m, sizeof off_idx, STAS_LUA_INDEX);
+            *b = off_idx; *n = m; return 0;
+        }
+        for (int q = 0; q < STAS_LUA_NPKGS; q++)
+            if (streq(file, STAS_LUA_PKGS[q].file)) { *b = STAS_LUA_PKGS[q].data; *n = slen(*b); return 0; }
         if (streq(file, "bench.stp")) { *b = STAS_PKG_BENCH; *n = slen(*b); return 0; }
         if (streq(file, "math.stp")) { *b = STAS_PKG_MATH; *n = slen(*b); return 0; }
         if (streq(file, "dice.stp")) { *b = STAS_PKG_DICE; *n = slen(*b); return 0; }
@@ -543,6 +550,31 @@ static void stas_info(const char *name) {
     puts("Info:      "); for (int k = 0; k < e.dlen; k++) putc(e.desc[k]); putc('\n');
     puts("Installed: "); puts(stas_node(name) >= 0 ? "yes\n" : "no\n");
 }
+static void stas_install(const char *name);
+static int stas_needs_depth;
+/* вторая строка пакета Lua может быть "--needs имя имя ...": модули ставятся вместе с программой */
+static void stas_install_needs(const char *name) {
+    int i = stas_node(name);
+    if (i < 0 || stas_needs_depth >= 3) return;
+    const u8 *d = fsdata[i]; int n = fsn[i].size, p = 0, k = 0;
+    static const char key[] = "--needs ";
+    while (p < n && d[p] != '\n') p++;
+    p++;
+    while (key[k] && p + k < n && d[p + k] == (u8)key[k]) k++;
+    if (key[k]) return;
+    p += k;
+    char line[96]; int m = 0;
+    while (p < n && d[p] != '\n' && d[p] != '\r' && m < 95) line[m++] = (char)d[p++];
+    line[m] = 0;
+    char *a = line, *dep;
+    stas_needs_depth++;
+    while ((dep = tok(&a))) {
+        if (stas_node(dep) >= 0) continue;
+        puts("Installing dependency: "); puts(dep); putc('\n');
+        stas_install(dep);
+    }
+    stas_needs_depth--;
+}
 static void stas_install(const char *name) {
     if (!stas_okname(name)) { puts("stas: bad package name (a-z 0-9 - _ , up to 15 characters)\n"); return; }
     struct stas_ent e; int f = stas_find(name, &e);
@@ -588,6 +620,7 @@ static void stas_install(const char *name) {
     int r = stas_put(name, install_data, install_len);
     if (r < 0) { fs_err(r); return; }
     puts("Installed "); puts(name); puts(" ("); putu(install_len); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
+    stas_install_needs(name);
 }
 static void stas_remove(const char *name) {
     if (!stas_okname(name)) { puts("stas: bad package name\n"); return; }
@@ -739,7 +772,12 @@ static void stas_exec(void) {
         else STAS_ERR("unknown statement");
     }
 }
+static int stas_is_lua(int idx) {                       /* первая строка файла: --lua */
+    const u8 *d = fsdata[idx]; int n = fsn[idx].size;
+    return n >= 5 && d[0] == '-' && d[1] == '-' && d[2] == 'l' && d[3] == 'u' && d[4] == 'a' && (n == 5 || d[5] == '\n' || d[5] == '\r' || d[5] == ' ');
+}
 static void stas_run_idx(int idx) {
+    if (stas_is_lua(idx)) { lua_run_src((const char *)fsdata[idx], fsn[idx].size, fsn[idx].name); return; }
     if (stas_load(idx) < 0) { puts("stas: script is too long (max 160 lines)\n"); return; }
     stas_exec();
 }

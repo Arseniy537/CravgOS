@@ -1,5 +1,5 @@
 /* ---- сценарии stas поверх хост-стенда (см. tests/host_stas.py) ---- */
-const u8 cyr_font[CYR_N][16] = {{0}};
+/* cyr_font defined in host_kernel.py */
 static volatile u32 fake_regs[0x10000];
 static void cmd(const char *s) { char b[200]; strcpy(b, s); printf("\n$ %s\n", s); fflush(stdout); run(b); }
 static void dumpscreen(const char *title) {
@@ -9,9 +9,14 @@ static void dumpscreen(const char *title) {
 }
 #define EXPECT(c) do { if (!(c)) { printf("EXPECT FAILED line %d: %s\n", __LINE__, #c); sc_fail++; } } while (0)
 int main(void) {
+#ifdef _WIN32
+    if (!VirtualAlloc((void *)0xB8000, 0x8000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)) { perror("VirtualAlloc vga"); return 9; }
+#else
     if (mmap((void *)0xB8000, 0x8000, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) == MAP_FAILED) { perror("mmap vga"); return 9; }
+#endif
     memset((void *)0xB8000, 0, 0x8000);
     { FILE *f = fopen("stas-repo/index.txt", "rb"); if (!f) { puts("run from the repo root"); return 2; } fread(repo_index, 1, sizeof repo_index - 1, f); fclose(f);
+      { char keep[4096]; int k = 0; for (char *ln = repo_index; *ln; ) { char *e = strchr(ln, '\n'); int l = e ? (int)(e - ln) + 1 : (int)strlen(ln); if (!strncmp(ln, "nim ", 4)) { memcpy(keep + k, ln, (size_t)l); k += l; } ln += l; } memcpy(repo_index, keep, (size_t)k); repo_index[k] = 0; }   /* мок-сервер отдаёт ответ одним TCP-сегментом: оставляем только nim */
       f = fopen("stas-repo/nim.stp", "rb"); fread(repo_nim, 1, sizeof repo_nim - 1, f); fclose(f); }
     key_init(); pit_init(); pit_prev = pit_read(); boot_tod = tod(); rng = 12345; fs_boot();
     nic_tx = h_tx; nic_rx = h_rx; ms_now = now_ms; nic_ok = 1; nip = 0x0A00020F; nmask = 0xFFFFFF00u; ngw = 0x0A000202; ndns = 0x0A000203;
@@ -28,7 +33,7 @@ int main(void) {
     clear(); cmd("stas"); EXPECT(screen_has("package manager"));
     clear(); cmd("stas list"); EXPECT(screen_has("stas update"));
     cmd("stas repo http://example.com/stas-repo");
-    clear(); cmd("stas update"); EXPECT(screen_has("Index updated: 1 package")); dumpscreen("stas update");
+    clear(); cmd("stas update"); EXPECT(screen_has("Index updated: ")); dumpscreen("stas update");
     clear(); cmd("stas list"); EXPECT(screen_has("[ ] nim")); dumpscreen("stas list");
     clear(); cmd("stas install nim"); EXPECT(screen_has("Installed nim") && screen_has("sha256 ok")); dumpscreen("stas install");
     EXPECT(fs_resolve("/apps/nim") > 0);

@@ -695,7 +695,7 @@ static void fetch(void) {
         switch (i) {
         case 0: color = th->user; puts(cur_user); color = th->base; puts("@"); color = th->user; puts(cur_host); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.7.0 x86_64"); break;
+        case 2: kv("OS", "Cravgos 0.8.0 x86_64"); break;
         case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
@@ -2315,7 +2315,7 @@ static void cmd_gui(void) {
 
             /* Top Taskbar */
             fill_rect(0, 0, W, 1, th->title);
-            put_clip(1, 0, "[CravgOS 0.7.0 Desktop]", 24, th->sel);
+            put_clip(1, 0, "[CravgOS 0.8.0 Desktop]", 24, th->sel);
             put_clip(27, 0, "1:Files  2:Web  3:Theme  4:Exit", 35, th->title);
             put_clip(W - 9, 0, kbd_ru ? "[RU] " : "[EN] ", 5, th->mark);
             put_clip(W - 4, 0, "[X]", 3, th->mark);
@@ -2329,7 +2329,7 @@ static void cmd_gui(void) {
             /* Main Active Window */
             if (active_win) {
                 fill_rect(win_x + 2, win_y + 1, win_w, win_h, 0x08);
-                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.7.0");
+                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.8.0");
                 put_str_at(win_x + win_w - 4, win_y, "[X]", th->dlg);
 
                 put_clip(win_x + 3, win_y + 2, "Architecture: x86_64 Long Mode (BIOS / UEFI / GRUB)", win_w - 6, th->dlg);
@@ -2625,7 +2625,7 @@ static void setup_wizard(void) {
     clear();
     int bx = 6, by = 2, bw = 68, bh = 20;
     draw_box(bx, by, bw, bh, th->frame, 1);
-    put_str_at(bx + 18, by + 1, "CRAVGOS 0.7.0 FIRST-RUN SETUP", th->head);
+    put_str_at(bx + 18, by + 1, "CRAVGOS 0.8.0 FIRST-RUN SETUP", th->head);
     put_str_at(bx + 4, by + 3, "Welcome! Let's customize your user profile and theme.", th->base);
 
     /* Step 1: Username */
@@ -2662,7 +2662,7 @@ static void setup_wizard(void) {
         int tidx = tbuf[0] - '1';
         theme_apply(tidx);
         draw_box(bx, by, bw, bh, th->frame, 1);
-        put_str_at(bx + 18, by + 1, "CRAVGOS 0.7.0 FIRST-RUN SETUP", th->head);
+        put_str_at(bx + 18, by + 1, "CRAVGOS 0.8.0 FIRST-RUN SETUP", th->head);
     }
 
     /* Step 3: Network */
@@ -2746,6 +2746,7 @@ static const struct cinfo cmdtab[] = {
  {"lspci", "", "lspci", "List PCI devices; shows whether your network card is supported."},
  {"web", "browse", "web [URL]", "Mouse browser for http and https with Cyrillic text and PNG/JPEG/GIF pictures (up to 6 per page, shown in 16 colours; Esc skips loading). Click links, wheel scrolls, G types an address, B back, Q quits."},
  {"curl", "wget", "curl URL", "Print a web page as text inside the shell (Esc cancels). Example: curl example.com"},
+ {"lua", "", "lua FILE | lua CODE", "Run a Lua program (integer Lua subset): lua /lua/hello.lua or lua print(6*7). Programs can draw on the screen, read keys and use files in /lua. The Lua IDE, calendar and tetris are packages: stas install luaide."},
  {"stas", "", "stas update|list|info|install|remove|run|repo", "Package manager. Packages (small scripts, games) come from your own repository: stas update, stas list, stas install nim, then just type nim. stas repo URL changes the repository; stas alone shows help."},
  {"guess", "", "guess", "Number guessing game: 1-100 in 7 tries."},
  {"rps", "", "rps", "Rock-paper-scissors against the computer (r / p / s, q quits)."},
@@ -2769,6 +2770,39 @@ static int word_in(const char *list, const char *w) {
 static const struct cinfo *cmd_find(const char *w) {
     for (int i = 0; i < NCMD; i++) if (streq(cmdtab[i].name, w) || word_in(cmdtab[i].alias, w)) return &cmdtab[i];
     return 0;
+}
+/* ---------- Lua: связь интерпретатора (lua.h) с ядром ---------- */
+static void lua_rtc(int *y, int *mo, int *d, int *h, int *mi, int *sec) {
+    rtc_wait();
+    *sec = bcd(cmos(0)); *mi = bcd(cmos(2)); *h = bcd(cmos(4)); *d = bcd(cmos(7)); *mo = bcd(cmos(8)); *y = 2000 + bcd(cmos(9));
+    if (*mo < 1 || *mo > 12) *mo = 1;
+}
+static int lua_edit(const char *path) {                 /* встроенный редактор для файла (создаёт, если его нет) */
+    int i = fs_resolve(path);
+    if (i < 0) { if (fs_resolve("/lua") < 0) fs_create("/lua", 1); i = fs_create(path, 0); }
+    if (i < 0 || fsn[i].dir) return 0;
+    editor(i);
+    return 1;
+}
+#define LUA_HEAP_ATTR XBSS
+#include "lua.h"
+static void cmd_lua(char *args) {
+    char code[200]; int n = 0;
+    while (*args == ' ') args++;
+    if (!*args) {
+        puts("lua - run a Lua program (integer Lua subset)\n"
+             "  lua FILE        run a file, for example: lua /lua/hello.lua\n"
+             "  lua CODE        run one line, for example: lua print(6*7)\n"
+             "Files for programs live in /lua. Install the Lua IDE: stas install luaide\n");
+        return;
+    }
+    while (args[n] && n < (int)sizeof code - 1) { code[n] = args[n]; n++; }
+    code[n] = 0;
+    char *a = args; char *p = tok(&a);
+    int i = p ? fs_resolve(p) : -1;
+    L.seed ^= rdtsc32() | 1u;
+    if (i >= 0 && !fsn[i].dir) lua_run_src((const char *)fsdata[i], fsn[i].size, fsn[i].name);
+    else lua_run_src(code, n, "lua");
 }
 #include "stas.h"
 static void bx_para(const char *lab, const char *txt, int w) {
@@ -2801,7 +2835,7 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.7.0 (x86_64) - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.8.0 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
     bx_row("         ", "fastfetch free save reboot halt crashtest user hostname setup", 78);
@@ -2812,7 +2846,7 @@ static void help(char *args) {
     bx_row("NETWORK  ", "web (http+https browser) curl ifconfig dhcp dns ping", 78);
     bx_row("         ", "nslookup netdiag arp lspci netmgr wifi", 78);
     bx_mid(78);
-    bx_row("TOOLS    ", "calc cowsay stas (packages) gui (desktop)", 78);
+    bx_row("TOOLS    ", "calc cowsay lua stas (packages) gui (desktop)", 78);
     bx_row("GAMES    ", "guess rps snake                FUN   matrix beep", 78);
     bx_mid(78);
     bx_row("TIP      ", "help COMMAND shows usage and an example, e.g.  help ping", 78);
@@ -2843,7 +2877,7 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.7.0 (x86_64)", "  -  operating system for x86_64", 62);
+    bx_row("Cravgos 0.8.0 (x86_64)", "  -  operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
@@ -2865,7 +2899,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.7.0 (x86_64)  -  64-bit OS", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.8.0 (x86_64)  -  64-bit OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2900,7 +2934,7 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.7.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.8.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
     else if (streq(cmd, "user") || streq(cmd, "username")) cmd_user(args);
     else if (streq(cmd, "hostname") || streq(cmd, "host")) cmd_hostname(args);
     else if (streq(cmd, "setup") || streq(cmd, "wizard")) cmd_setup(args);
@@ -2978,6 +3012,7 @@ static void run(char *line) {
     else if (streq(cmd, "fm") || streq(cmd, "mc") || streq(cmd, "files")) commander();
     else if (streq(cmd, "gui") || streq(cmd, "desktop") || streq(cmd, "gfx")) cmd_gui();
     else if (streq(cmd, "theme")) cmd_theme(args);
+    else if (streq(cmd, "lua")) cmd_lua(args);
     else if (streq(cmd, "stas")) cmd_stas(args);
     /* игры и прочее */
     else if (streq(cmd, "guess")) game_guess();
@@ -3018,8 +3053,8 @@ static void fs_boot(void) {
     (void)h; (void)d;
     write_text("/readme.txt",
         "Welcome to Cravgos!\nPersistent storage: files and settings are saved automatically.\n"
-        "Try: ls, tree, edit notes.txt, ping 10.0.2.2, fastfetch", 0);
-    write_text("/docs/commands.txt", "ls cd cat edit cp mv rm mkdir | ping nslookup dhcp | snake guess rps", 0);
+        "Try: ls, tree, edit notes.txt, ping 10.0.2.2, fastfetch, lua print(6*7), stas install luaide", 0);
+    write_text("/docs/commands.txt", "ls cd cat edit cp mv rm mkdir | ping nslookup dhcp | snake guess rps | lua stas", 0);
 }
 
 /* ---------- Перехват исключений процессора ---------- */
@@ -3107,23 +3142,6 @@ void shell_main(void) {
     }
 }
 void kmain(void) {
-    idt_init();
-    ru_init();
-    vga_font_load();
-    vga_blink_off();
-    th = &themes[3]; color = th->base;
-    pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
-    boot_tod = tod();
-    rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
-    if (!rng) rng = 1;
-    dhcp_xid ^= rng;
-    ata_init();
-    if (!disk_load()) {
-        fs_boot();
-        if (ata_present) disk_save();
-    }
-    nic_tx = e1000_send; nic_rx = e1000_recv; ms_now = now_ms;
-    nic_ok = e1000_init();
     idt_init();                                    /* первым делом: исключения больше не убивают машину */
     ru_init(); vga_font_load(); vga_blink_off();   /* кириллица и 16 цветов фона */
     th = &themes[3]; color = th->base;             /* тема amber по умолчанию */

@@ -15,5 +15,8 @@ head = head.replace('int main(void)', 'int main_unused(void)')
 foot = open(os.path.join(root, 'tests', 'host_stas_main.c')).read()
 # сценарии стенда используют screen_has / sc_fail из хвоста host_main.c: берём их оттуда
 helpers = re.search(r'static int sc_fail;.*?\n\}\n', hm, re.S).group(0)
-open('/tmp/hs_main.c', 'w').write(head + '\n' + helpers + '\n' + foot)
-sys.exit(subprocess.call([sys.executable, os.path.join(root, 'tests', 'host_kernel.py'), '/tmp/hs_main.c', 'host_stas']))
+import tempfile
+tmp_dir = '/tmp' if os.path.exists('/tmp') else tempfile.gettempdir()
+hs_main = os.path.join(tmp_dir, 'hs_main.c')
+open(hs_main, 'w').write(head + '\n' + helpers + '\n' + foot)
+sys.exit(subprocess.call([sys.executable, os.path.join(root, 'tests', 'host_kernel.py'), hs_main, 'host_stas']))

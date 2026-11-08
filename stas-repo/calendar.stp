@@ -1,0 +1,50 @@
+--lua
+-- calendar - month calendar: arrows move, t today, g go to, q quit
+local d = os.date()
+local TY, TM, TD = d.year, d.month, d.day
+local Y, M = TY, TM
+local MN = {"January","February","March","April","May","June","July","August","September","October","November","December"}
+local DN = {31,28,31,30,31,30,31,31,30,31,30,31}
+local function dim(y, m)
+  if m == 2 and (y % 4 == 0 and y % 100 ~= 0 or y % 400 == 0) then return 29 end
+  return DN[m]
+end
+local function wday(y, m, dd)
+  local t = {0,3,2,5,0,3,5,1,4,6,2,4}
+  if m < 3 then y = y - 1 end
+  return (y + y // 4 - y // 100 + y // 400 + t[m] + dd + 6) % 7
+end
+local function draw()
+  term.color(7, 0) term.clear()
+  term.color(14, 1) term.fill(24, 3, 32, 1, " ")
+  local h = MN[M] .. " " .. Y
+  term.put(40 - #h // 2, 3, h)
+  term.color(11, 0) term.put(26, 5, "Mo  Tu  We  Th  Fr  Sa  Su")
+  local col, row = wday(Y, M, 1), 0
+  for dd = 1, dim(Y, M) do
+    if Y == TY and M == TM and dd == TD then term.color(0, 10) else term.color(col > 4 and 12 or 7, 0) end
+    term.put(26 + col * 4, 7 + row * 2, dd < 10 and " " .. dd or dd)
+    col = col + 1
+    if col == 7 then col = 0 row = row + 1 end
+  end
+  term.color(8, 0) term.put(20, 20, "</>: month  Up/Down: year  t: today  g: go to  q: quit")
+end
+term.cursor(false)
+while true do
+  draw()
+  local k = term.getkey()
+  if k == 113 or k == 27 then break
+  elseif k == term.LEFT then M = M - 1 if M < 1 then M = 12 Y = Y - 1 end
+  elseif k == term.RIGHT then M = M + 1 if M > 12 then M = 1 Y = Y + 1 end
+  elseif k == term.UP then Y = Y + 1
+  elseif k == term.DOWN and Y > 1 then Y = Y - 1
+  elseif k == 116 then Y, M = TY, TM
+  elseif k == 103 then
+    term.color(15, 0) term.put(26, 22, "Year Month: ") term.at(38, 22) term.cursor(true)
+    local s = term.readline() term.cursor(false)
+    local a = s:find(" ", 1, true)
+    local y, m = tonumber(s:sub(1, (a or 1) - 1)), tonumber(s:sub((a or 0) + 1))
+    if a and y and m and y > 0 and m > 0 and m < 13 then Y, M = y, m end
+  end
+end
+term.color(7, 0) term.clear() term.cursor(true)

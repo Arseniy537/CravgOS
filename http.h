@@ -309,7 +309,7 @@ static int http_fetch_req(const char *url, const char *method, const char *ctype
         ps[pi] = 0;
         h_apnd(req, &n, sizeof req, ps);
     }
-    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.7.1; x86_64)\r\nAccept: ");
+    h_apnd(req, &n, sizeof req, "\r\nUser-Agent: Mozilla/5.0 (compatible; Cravgos/0.8.0; x86_64)\r\nAccept: ");
     h_apnd(req, &n, sizeof req, http_accept);
     if (ctype && *ctype) {
         h_apnd(req, &n, sizeof req, "\r\nContent-Type: ");

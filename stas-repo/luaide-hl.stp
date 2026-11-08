@@ -1,0 +1,30 @@
+--lua
+-- luaide-hl - syntax highlighter (module of luaide)
+local K = {}
+local w = "and break do else elseif end false for function if in local nil not or repeat return then true until while"
+local i = 1
+while i <= #w do
+  local j = w:find(" ", i, true) or #w + 1
+  K[w:sub(i, j - 1)] = true
+  i = j + 1
+end
+local function isw(b) return b and (b == 95 or b >= 48 and b <= 57 or b >= 65 and b <= 90 or b >= 97 and b <= 122) end
+-- draws one source line at (x, y), at most maxw characters
+return function(x, y, s, maxw)
+  local n, i = #s, 1
+  if n > maxw then n = maxw end
+  while i <= n do
+    local b, j, col = s:byte(i), i, 7
+    if b == 45 and s:byte(i + 1) == 45 then j, col = n, 8
+    elseif b == 34 or b == 39 then
+      j = i + 1
+      while j < n and s:byte(j) ~= b do j = j + 1 end
+      col = 10
+    elseif isw(b) then
+      while j < n and isw(s:byte(j + 1)) do j = j + 1 end
+      if b >= 48 and b <= 57 then col = 14 elseif K[s:sub(i, j)] then col = 11 end
+    end
+    term.color(col, 0) term.put(x + i - 1, y, s:sub(i, j))
+    i = j + 1
+  end
+end
