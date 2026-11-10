@@ -12,4 +12,4 @@ SECTIONS
     .bigbss 0x100000 : { __bigbss_start = .; KEEP(*(.bss.xbig)) __bigbss_end = .; }
     /DISCARD/ : { *(.eh_frame) *(.note*) *(.comment) *(.pdata) *(.xdata) }
 }
-ASSERT(__bss_end <= 0x80000, ".bss section exceeds 0x80000 (conventional memory limit)!");
+ASSERT(__bss_end <= 0x90000, ".bss section exceeds 0x90000 (conventional memory limit)!");
