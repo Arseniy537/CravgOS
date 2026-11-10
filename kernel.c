@@ -41,7 +41,9 @@ static void scroll(void) {
     for (int i = W * (H - 1); i < W * H; i++) vga[i] = (color << 8) | ' ';
     cy = H - 1;
 }
+static void (*out_hook)(char c) = 0;
 static void putc(char c) {
+    if (out_hook) { out_hook(c); return; }
     if (c == '\n') { cx = 0; cy++; }
     else if (c == '\b') { if (cx > 0) { cx--; vga[cy * W + cx] = (color << 8) | ' '; } }
     else { vga[cy * W + cx] = (color << 8) | (u8)c; if (++cx >= W) { cx = 0; cy++; } }
@@ -1295,7 +1297,20 @@ static void draw_box(int x, int y, int w, int h, u8 at, int dbl) {
     put_at(x, y, tl, at); put_at(x + w - 1, y, tr, at); put_at(x, y + h - 1, bl, at); put_at(x + w - 1, y + h - 1, br, at);
 }
 static void put_clip(int x, int y, const char *s, int maxw, u8 at) {
-    for (int i = 0; i < maxw && s[i]; i++) put_at(x + i, y, s[i], at);
+    int col = 0;
+    while (*s && col < maxw) {
+        u8 c = (u8)*s++;
+        if ((c == 0xD0 || c == 0xD1) && *s && ((u8)*s & 0xC0) == 0x80) {
+            u8 c2 = (u8)*s++;
+            u32 cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            u8 b = uni_to_866(cp);
+            c = b ? b : '?';
+        }
+        if (x + col >= 0 && x + col < W && y >= 0 && y < H) {
+            put_at(x + col, y, (char)c, at);
+        }
+        col++;
+    }
 }
 static void shade(int x, int y) {
     if (x < 0 || x >= W || y < 0 || y >= H) return;
@@ -2276,7 +2291,7 @@ static void cmd_theme(char *args) {
 }
 
 /* ============================================================================
- * Графическая подсистема и абстракция дисплея (Display / Desktop Environment)
+ * Графическая подсистема: Бесконечный холст и оконный менеджер (Canvas GUI)
  * ============================================================================ */
 struct fb_info {
     u32 width;
@@ -2291,125 +2306,991 @@ static struct fb_info g_fb __attribute__((unused)) = {
     80, 25, 80 * 2, 16, (u8 *)0xB8000, 0
 };
 
+static void run(char *line);
+static int stas_try_app(const char *cmd);
+
+static inline int iabs(int v) { return v < 0 ? -v : v; }
+
+static void apnd_i(char *d, int *n, int max, int v) {
+    if (v < 0) {
+        if (*n < max - 1) d[(*n)++] = '-';
+        apnd_u(d, n, max, (u32)(-v));
+    } else {
+        if (*n < max - 1) d[(*n)++] = '+';
+        apnd_u(d, n, max, (u32)v);
+    }
+}
+
+static inline void put_at_clip(int x, int y, char c, u8 attr) {
+    if (x >= 0 && x < W && y >= 1 && y < H - 1) {
+        vga[y * W + x] = (attr << 8) | (u8)c;
+    }
+}
+
+static void put_str_clip(int x, int y, const char *s, int maxw, u8 attr) {
+    int col = 0;
+    while (*s && col < maxw) {
+        u8 c = (u8)*s++;
+        if ((c == 0xD0 || c == 0xD1) && *s && ((u8)*s & 0xC0) == 0x80) {
+            u8 c2 = (u8)*s++;
+            u32 cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            u8 b = uni_to_866(cp);
+            c = b ? b : '?';
+        }
+        put_at_clip(x + col, y, (char)c, attr);
+        col++;
+    }
+}
+
+static void fill_rect_clip(int x, int y, int w, int h, char ch, u8 attr) {
+    for (int j = 0; j < h; j++) {
+        int py = y + j;
+        if (py < 1 || py >= H - 1) continue;
+        for (int i = 0; i < w; i++) {
+            int px = x + i;
+            if (px < 0 || px >= W) continue;
+            vga[py * W + px] = (attr << 8) | (u8)ch;
+        }
+    }
+}
+
+#define MAX_GUI_WINS 6
+#define TERM_HIST_LINES 32
+#define TERM_LINE_LEN 72
+
+enum gui_win_type {
+    GWIN_FREE = 0,
+    GWIN_TERMINAL,     /* Тестовый терминал */
+    GWIN_CATALOG,      /* Полный список всех приложений */
+    GWIN_APP_CARD      /* Запущенное приложение */
+};
+
+struct gui_win {
+    int used;
+    int id;
+    enum gui_win_type type;
+    int wx, wy;
+    int w, h;
+    char title[64];
+    int minimized;
+
+    char term_cmd[72];
+    int term_len;
+    char term_history[TERM_HIST_LINES][TERM_LINE_LEN];
+    int term_lines;
+    int term_scroll;
+
+    int cat_sel;
+    int cat_scroll;
+
+    char app_cmd[24];
+    char app_desc[48];
+};
+
+static struct gui_win gwins[MAX_GUI_WINS] XBSS;
+static int win_z[MAX_GUI_WINS];
+static int win_count = 0;
+static int next_win_id = 1;
+static struct gui_win *g_cur_term_win = 0;
+
+static void bring_to_front(int slot) {
+    int cur_idx = -1;
+    for (int i = 0; i < win_count; i++) {
+        if (win_z[i] == slot) { cur_idx = i; break; }
+    }
+    if (cur_idx < 0) {
+        if (win_count < MAX_GUI_WINS) {
+            win_z[win_count++] = slot;
+            cur_idx = win_count - 1;
+        } else return;
+    }
+    for (int i = cur_idx; i > 0; i--) {
+        win_z[i] = win_z[i - 1];
+    }
+    win_z[0] = slot;
+}
+
+static void remove_from_z(int slot) {
+    int cur_idx = -1;
+    for (int i = 0; i < win_count; i++) {
+        if (win_z[i] == slot) { cur_idx = i; break; }
+    }
+    if (cur_idx >= 0) {
+        for (int i = cur_idx; i < win_count - 1; i++) {
+            win_z[i] = win_z[i + 1];
+        }
+        win_count--;
+    }
+}
+
+static int alloc_win_slot(void) {
+    for (int i = 0; i < MAX_GUI_WINS; i++) {
+        if (!gwins[i].used) return i;
+    }
+    return -1;
+}
+
+static void win_term_add_line(struct gui_win *w, const char *line) {
+    if (w->term_lines < TERM_HIST_LINES) {
+        w->term_lines++;
+    } else {
+        for (int i = 0; i < TERM_HIST_LINES - 1; i++) {
+            for (int j = 0; j < TERM_LINE_LEN; j++) {
+                w->term_history[i][j] = w->term_history[i + 1][j];
+            }
+        }
+    }
+    int cur = w->term_lines - 1;
+    if (cur < 0) cur = 0;
+    int j = 0;
+    while (j < TERM_LINE_LEN - 1 && line && *line) {
+        u8 c = (u8)*line++;
+        if (c >= 0xC0 && c <= 0xDF && *line && ((u8)*line & 0xC0) == 0x80) {
+            u8 c2 = (u8)*line++;
+            u32 cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            u8 b = uni_to_866(cp);
+            c = b ? b : '?';
+        }
+        w->term_history[cur][j++] = (char)c;
+    }
+    w->term_history[cur][j] = 0;
+}
+
+static u8 term_utf8_lead = 0;
+static void term_capture_char(char c) {
+    if (!g_cur_term_win) return;
+    struct gui_win *w = g_cur_term_win;
+    if (c == '\r') return;
+
+    u8 uc = (u8)c;
+    if (term_utf8_lead) {
+        u8 c1 = term_utf8_lead;
+        term_utf8_lead = 0;
+        if ((uc & 0xC0) == 0x80) {
+            u32 cp = ((c1 & 0x1F) << 6) | (uc & 0x3F);
+            u8 b = uni_to_866(cp);
+            c = (char)(b ? b : '?');
+        }
+    } else if (uc >= 0xC0 && uc <= 0xDF) {
+        term_utf8_lead = uc;
+        return;
+    }
+
+    if (c == '\n') {
+        if (w->term_lines < TERM_HIST_LINES) {
+            w->term_lines++;
+        } else {
+            for (int i = 0; i < TERM_HIST_LINES - 1; i++) {
+                for (int j = 0; j < TERM_LINE_LEN; j++) {
+                    w->term_history[i][j] = w->term_history[i + 1][j];
+                }
+            }
+        }
+        int cur = w->term_lines - 1;
+        if (cur < 0) cur = 0;
+        for (int j = 0; j < TERM_LINE_LEN; j++) w->term_history[cur][j] = 0;
+        return;
+    }
+
+    if (w->term_lines == 0) {
+        w->term_lines = 1;
+        for (int j = 0; j < TERM_LINE_LEN; j++) w->term_history[0][j] = 0;
+    }
+
+    int cur = w->term_lines - 1;
+    int len = 0;
+    while (w->term_history[cur][len] && len < TERM_LINE_LEN - 1) len++;
+
+    if (c == '\b') {
+        if (len > 0) w->term_history[cur][len - 1] = 0;
+        return;
+    }
+
+    if (len < TERM_LINE_LEN - 1) {
+        w->term_history[cur][len] = c;
+        w->term_history[cur][len + 1] = 0;
+    } else {
+        term_capture_char('\n');
+        cur = w->term_lines - 1;
+        w->term_history[cur][0] = c;
+        w->term_history[cur][1] = 0;
+    }
+}
+
+static void win_term_execute(struct gui_win *w) {
+    char cmd[72];
+    int n = 0;
+    while (n < 71 && w->term_cmd[n]) { cmd[n] = w->term_cmd[n]; n++; }
+    cmd[n] = 0;
+
+    char prompt_line[80];
+    int pn = 0; prompt_line[0] = 0;
+    h_apnd(prompt_line, &pn, sizeof(prompt_line), cur_user);
+    h_apnd(prompt_line, &pn, sizeof(prompt_line), "@");
+    h_apnd(prompt_line, &pn, sizeof(prompt_line), cur_host);
+    h_apnd(prompt_line, &pn, sizeof(prompt_line), ":/ > ");
+    h_apnd(prompt_line, &pn, sizeof(prompt_line), cmd);
+    win_term_add_line(w, prompt_line);
+
+    w->term_len = 0;
+    w->term_cmd[0] = 0;
+    w->term_scroll = 0;
+
+    char *c = cmd;
+    while (*c == ' ') c++;
+    if (!*c) return;
+
+    if (streq(c, "clear")) {
+        w->term_lines = 0;
+        w->term_scroll = 0;
+        return;
+    }
+    if (streq(c, "exit") || streq(c, "quit")) {
+        w->used = 0;
+        remove_from_z(w - gwins);
+        return;
+    }
+
+    if (streq(c, "fm") || streq(c, "mc") || streq(c, "files")) {
+        mouse_forget();
+        commander();
+        mouse_ui = 1; cursor_hide();
+        win_term_add_line(w, "[fm: closed]");
+        return;
+    }
+    if (streq(c, "web") || streq(c, "browse")) {
+        mouse_forget();
+        cmd_web("");
+        mouse_ui = 1; cursor_hide();
+        win_term_add_line(w, "[web: closed]");
+        return;
+    }
+    if (streq(c, "snake")) {
+        mouse_forget();
+        game_snake();
+        mouse_ui = 1; cursor_hide();
+        win_term_add_line(w, "[snake: closed]");
+        return;
+    }
+    if (streq(c, "matrix")) {
+        mouse_forget();
+        matrix();
+        mouse_ui = 1; cursor_hide();
+        win_term_add_line(w, "[matrix: closed]");
+        return;
+    }
+
+    g_cur_term_win = w;
+    out_hook = term_capture_char;
+    run(c);
+    out_hook = 0;
+    g_cur_term_win = 0;
+}
+
+struct app_item {
+    const char *name;
+    const char *cmd;
+    const char *desc;
+    int is_fullscreen;
+};
+
+static const struct app_item POPUP_APPS[] = {
+    {"Lua IDE (luaide)",     "luaide",   "IDE для скриптов Lua",        1},
+    {"Тетрис (tetris)",      "tetris",   "Игра Тетрис на Lua",          1},
+    {"Календарь (calendar)", "calendar", "Интерактивный календарь",     1},
+    {"RPG Tower (tower)",    "tower",    "Dungeon of Cravgos",          1},
+    {"Кости (dice)",         "dice",     "Игра в кости против ИИ",      1},
+    {"Тест CPU (bench)",     "bench",    "Бенчмарк процессора",         0},
+    {"Проводник (fm)",       "fm",       "Двухпанельный менеджер",      1},
+    {"Браузер (web)",        "web",      "Интернет веб-браузер",        1},
+    {"Новый терминал (sh)",  "terminal", "Тестовый CLI терминал",       0},
+};
+#define N_POPUP_APPS (int)(sizeof(POPUP_APPS) / sizeof(POPUP_APPS[0]))
+
+static const struct app_item ALL_APPS[] = {
+    {"tetris",     "tetris",    "Игра Тетрис на Lua (рекорд, уровни)", 1},
+    {"calendar",   "calendar",  "Интерактивный календарь на любой год", 1},
+    {"luaide",     "luaide",    "Среда разработки Lua IDE", 1},
+    {"tower",      "tower",     "RPG Dungeon of Cravgos", 1},
+    {"dice",       "dice",      "Игра в кости против компьютера", 1},
+    {"bench",      "bench",     "Бенчмарк вычислений Long Mode", 0},
+    {"math",       "math",      "Математический помощник (степени, НОД)", 0},
+    {"fact",       "fact",      "Вычисление факториала N!", 0},
+    {"guess",      "guess",     "Игра Угадай число (1..100)", 1},
+    {"nim",        "nim",       "Логическая игра со спичками", 1},
+    {"fm",         "fm",        "Двухпанельный проводник файлов", 1},
+    {"web",        "web",       "Веб-браузер HTTP/HTTPS", 1},
+    {"terminal",   "terminal",  "Тестовый терминал Cravgos CLI", 0},
+    {"netmgr",     "netmgr",    "Сетевой менеджер (Wi-Fi, DHCP)", 1},
+    {"fastfetch",  "fastfetch", "Системный информер системы", 0},
+    {"edit",       "edit",      "Полноэкранный текстовый редактор", 1},
+    {"snake",      "snake",     "Классическая аркадная Змейка", 1},
+    {"matrix",     "matrix",    "Заставка Цифровой дождь", 1},
+    {"cowsay",     "cowsay",    "Говорящая корова", 0},
+    {"calc",       "calc",      "Калькулятор (calc A+B)", 0},
+    {"theme",      "theme",     "Выбор цветовой палитры системы", 1},
+};
+#define N_ALL_APPS (int)(sizeof(ALL_APPS) / sizeof(ALL_APPS[0]))
+
+static void spawn_terminal_win(int wx, int wy, int w, int h) {
+    int slot = alloc_win_slot();
+    if (slot < 0) return;
+    struct gui_win *win = &gwins[slot];
+    win->used = 1;
+    win->id = next_win_id++;
+    win->type = GWIN_TERMINAL;
+    win->wx = wx;
+    win->wy = wy;
+    win->w = (w > 20) ? w : 68;
+    win->h = (h > 6) ? h : 17;
+    win->minimized = 0;
+
+    int n = 0; win->title[0] = 0;
+    h_apnd(win->title, &n, sizeof(win->title), "Тестовый Терминал CravgOS");
+
+    win->term_lines = 0;
+    win->term_scroll = 0;
+    win->term_len = 0;
+    win->term_cmd[0] = 0;
+
+    win_term_add_line(win, "=== Тестовый Терминал Cravgos (x86_64 Long Mode) ===");
+    win_term_add_line(win, "Команды: help, fastfetch, ls, ping, wifi, stas, lua, calc, free...");
+    win_term_add_line(win, "2x-Клик на холсте (или F1/F3) открывает меню запуска программ.");
+    win_term_add_line(win, "Каталог всех программ: F4. Новый терминал: F5. Смена темы: F2.");
+    win_term_add_line(win, "Перемещение холста: перетаскивание ПКМ или Стрелки / Колесо мыши.");
+
+    bring_to_front(slot);
+}
+
+static void spawn_catalog_win(int wx, int wy) {
+    for (int i = 0; i < win_count; i++) {
+        if (gwins[win_z[i]].used && gwins[win_z[i]].type == GWIN_CATALOG) {
+            gwins[win_z[i]].minimized = 0;
+            bring_to_front(win_z[i]);
+            return;
+        }
+    }
+    int slot = alloc_win_slot();
+    if (slot < 0) return;
+    struct gui_win *win = &gwins[slot];
+    win->used = 1;
+    win->id = next_win_id++;
+    win->type = GWIN_CATALOG;
+    win->wx = wx;
+    win->wy = wy;
+    win->w = 58;
+    win->h = 17;
+    win->minimized = 0;
+
+    int n = 0; win->title[0] = 0;
+    h_apnd(win->title, &n, sizeof(win->title), "Каталог всех приложений");
+    win->cat_sel = 0;
+    win->cat_scroll = 0;
+    bring_to_front(slot);
+}
+
+static void spawn_app_card(int wx, int wy, const char *cmd, const char *title, const char *desc) {
+    int slot = alloc_win_slot();
+    if (slot < 0) return;
+    struct gui_win *win = &gwins[slot];
+    win->used = 1;
+    win->id = next_win_id++;
+    win->type = GWIN_APP_CARD;
+    win->wx = wx;
+    win->wy = wy;
+    win->w = 42;
+    win->h = 8;
+    win->minimized = 0;
+
+    int n = 0; win->title[0] = 0;
+    h_apnd(win->title, &n, sizeof(win->title), title);
+
+    n = 0; win->app_cmd[0] = 0;
+    h_apnd(win->app_cmd, &n, sizeof(win->app_cmd), cmd);
+
+    n = 0; win->app_desc[0] = 0;
+    h_apnd(win->app_desc, &n, sizeof(win->app_desc), desc);
+
+    bring_to_front(slot);
+}
+
+static void launch_app(const struct app_item *app, int spawn_wx, int spawn_wy) {
+    if (streq(app->cmd, "terminal")) {
+        spawn_terminal_win(spawn_wx, spawn_wy, 68, 17);
+        return;
+    }
+    if (streq(app->cmd, "catalog")) {
+        spawn_catalog_win(spawn_wx, spawn_wy);
+        return;
+    }
+
+    if (app->is_fullscreen) {
+        mouse_forget();
+        if (streq(app->cmd, "fm")) commander();
+        else if (streq(app->cmd, "web")) cmd_web("");
+        else if (streq(app->cmd, "snake")) game_snake();
+        else if (streq(app->cmd, "matrix")) matrix();
+        else if (streq(app->cmd, "theme")) { int t = dlg_theme(); if (t >= 0) theme_apply(t); }
+        else {
+            char cbuf[32]; int cn = 0; cbuf[0] = 0;
+            h_apnd(cbuf, &cn, sizeof(cbuf), app->cmd);
+            run(cbuf);
+        }
+        mouse_ui = 1;
+        cursor_hide();
+        ui_drop_events();
+        spawn_app_card(spawn_wx, spawn_wy, app->cmd, app->name, app->desc);
+    } else {
+        spawn_app_card(spawn_wx, spawn_wy, app->cmd, app->name, app->desc);
+        if (win_count > 0 && gwins[win_z[0]].used && gwins[win_z[0]].type == GWIN_TERMINAL) {
+            struct gui_win *tw = &gwins[win_z[0]];
+            int cl = 0; tw->term_cmd[0] = 0;
+            h_apnd(tw->term_cmd, &cl, sizeof(tw->term_cmd), app->cmd);
+            win_term_execute(tw);
+        }
+    }
+}
+
 static void cmd_gui(void) {
     u8 omui = mouse_ui;
     mouse_ui = 1;
     cursor_hide();
 
-    int active_win = 1;
-    int win_x = 10, win_y = 3, win_w = 60, win_h = 17;
-    int redraw = 1;
+    for (int i = 0; i < MAX_GUI_WINS; i++) gwins[i].used = 0;
+    win_count = 0;
+    next_win_id = 1;
 
-    for (;;) {
+    /* Терминал для тестов открыт по умолчанию */
+    spawn_terminal_win(6, 2, 68, 17);
+
+    int cam_x = 0, cam_y = 0;
+    int redraw = 1;
+    int running = 1;
+
+    int drag_win = -1, drag_ox = 0, drag_oy = 0;
+    int panning = 0, pan_start_mx = 0, pan_start_my = 0, pan_orig_cx = 0, pan_orig_cy = 0;
+
+    int canvas_last_click = 0;
+    u32 canvas_click_time = 0;
+    int canvas_click_x = 0, canvas_click_y = 0;
+
+    int popup_open = 0;
+    int popup_sx = 0, popup_sy = 0, popup_sel = 0;
+    int popup_spawn_wx = 0, popup_spawn_wy = 0;
+
+    for (; running;) {
         if (redraw) {
             redraw = 0;
             mouse_forget();
 
-            /* Desktop background pattern */
-            for (int y = 0; y < H; y++) {
+            /* 1. Бесконечный холст (координатная сетка пространства) */
+            for (int y = 1; y < H - 1; y++) {
+                int wy = (y - 1) + cam_y;
                 for (int x = 0; x < W; x++) {
-                    char bg = (x % 4 == 0 && y % 2 == 0) ? (char)0xB0 : ' ';
-                    put_at(x, y, bg, th->base);
+                    int wx = x + cam_x;
+                    char ch = ' ';
+                    u8 at = th->base;
+
+                    if (wx == 0 && wy == 0) {
+                        ch = '+'; at = th->mark;
+                    } else if (wx == 0) {
+                        ch = (wy % 4 == 0) ? '+' : '|'; at = th->dim;
+                    } else if (wy == 0) {
+                        ch = (wx % 8 == 0) ? '+' : '-'; at = th->dim;
+                    } else if (wx % 8 == 0 && wy % 4 == 0) {
+                        ch = '+'; at = th->dim;
+                    } else if (wx % 4 == 0 && wy % 2 == 0) {
+                        ch = (char)0xFA; at = th->dim;
+                    }
+                    vga[y * W + x] = (at << 8) | (u8)ch;
                 }
             }
 
-            /* Top Taskbar */
-            fill_rect(0, 0, W, 1, th->title);
-            put_clip(1, 0, "[CravgOS 0.8.0 Desktop]", 24, th->sel);
-            put_clip(27, 0, "1:Files  2:Web  3:Theme  4:Exit", 35, th->title);
-            put_clip(W - 9, 0, kbd_ru ? "[RU] " : "[EN] ", 5, th->mark);
-            put_clip(W - 4, 0, "[X]", 3, th->mark);
+            /* 2. Окна на холсте (от дальних к активному в Z-порядке) */
+            for (int zi = win_count - 1; zi >= 0; zi--) {
+                int slot = win_z[zi];
+                struct gui_win *w = &gwins[slot];
+                if (!w->used) continue;
 
-            /* Desktop Icons */
-            put_str_at(2, 2, "[fm] Files", th->head);
-            put_str_at(2, 5, "[web] Browser", th->head);
-            put_str_at(2, 8, "[stas] Apps", th->head);
-            put_str_at(2, 11, "[sh] Terminal", th->head);
+                int sx = w->wx - cam_x;
+                int sy = w->wy - cam_y + 1;
+                int is_active = (zi == 0);
+                int wh = w->minimized ? 1 : w->h;
 
-            /* Main Active Window */
-            if (active_win) {
-                fill_rect(win_x + 2, win_y + 1, win_w, win_h, 0x08);
-                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.8.0");
-                put_str_at(win_x + win_w - 4, win_y, "[X]", th->dlg);
+                if (sx + w->w <= 0 || sx >= W || sy + wh <= 1 || sy >= H - 1) continue;
 
-                put_clip(win_x + 3, win_y + 2, "Architecture: x86_64 Long Mode (BIOS / UEFI / GRUB)", win_w - 6, th->dlg);
-                put_clip(win_x + 3, win_y + 3, "Display: Video Framebuffer / Text Console 80x25", win_w - 6, th->dlg);
+                u8 at_frame = is_active ? th->sel : th->dlg;
+                u8 at_body = th->base;
 
-                char netinfo[64]; int nn = 0; netinfo[0] = 0;
-                h_apnd(netinfo, &nn, sizeof netinfo, "Network: Intel e1000 ");
-                h_apnd(netinfo, &nn, sizeof netinfo, (nr(0x0008) & 2) ? "[ONLINE]" : "[OFFLINE]");
-                put_clip(win_x + 3, win_y + 5, netinfo, win_w - 6, th->dlg);
+                /* Заголовок окна */
+                put_at_clip(sx, sy, is_active ? (char)0xC9 : (char)0xDA, at_frame);
+                fill_rect_clip(sx + 1, sy, w->w - 2, 1, ' ', at_frame);
+                put_str_clip(sx + 2, sy, w->title, w->w - 10, at_frame);
+                put_str_clip(sx + w->w - 7, sy, w->minimized ? "[+]" : "[-]", 3, at_frame);
+                put_str_clip(sx + w->w - 4, sy, "[X]", 3, at_frame);
+                put_at_clip(sx + w->w - 1, sy, is_active ? (char)0xBB : (char)0xBF, at_frame);
 
-                char fsinfo[64]; int fn = 0; fsinfo[0] = 0;
-                h_apnd(fsinfo, &fn, sizeof fsinfo, "Filesystem: RAMFS + ATA Disk Persistence");
-                put_clip(win_x + 3, win_y + 6, fsinfo, win_w - 6, th->dlg);
+                if (!w->minimized) {
+                    for (int ly = 1; ly < wh - 1; ly++) {
+                        put_at_clip(sx, sy + ly, is_active ? (char)0xBA : (char)0xB3, at_frame);
+                        fill_rect_clip(sx + 1, sy + ly, w->w - 2, 1, ' ', at_body);
+                        put_at_clip(sx + w->w - 1, sy + ly, is_active ? (char)0xBA : (char)0xB3, at_frame);
+                    }
 
-                fill_rect(win_x + 4, win_y + 8, 12, 3, th->sel);
-                put_str_at(win_x + 6, win_y + 9, "1. Files", th->sel);
+                    put_at_clip(sx, sy + wh - 1, is_active ? (char)0xC8 : (char)0xC0, at_frame);
+                    for (int lx = 1; lx < w->w - 1; lx++) {
+                        put_at_clip(sx + lx, sy + wh - 1, is_active ? (char)0xCD : (char)0xC4, at_frame);
+                    }
+                    put_at_clip(sx + w->w - 1, sy + wh - 1, is_active ? (char)0xBC : (char)0xD9, at_frame);
 
-                fill_rect(win_x + 18, win_y + 8, 12, 3, th->sel);
-                put_str_at(win_x + 19, win_y + 9, "2. Browser", th->sel);
+                    /* Содержимое терминала */
+                    if (w->type == GWIN_TERMINAL) {
+                        int vis_rows = wh - 3;
+                        int tot = w->term_lines;
+                        int start_idx = (tot > vis_rows) ? (tot - vis_rows - w->term_scroll) : 0;
+                        if (start_idx < 0) start_idx = 0;
 
-                fill_rect(win_x + 32, win_y + 8, 12, 3, th->sel);
-                put_str_at(win_x + 33, win_y + 9, "3. Theme", th->sel);
+                        for (int r = 0; r < vis_rows; r++) {
+                            int lidx = start_idx + r;
+                            if (lidx >= 0 && lidx < tot) {
+                                put_str_clip(sx + 2, sy + 1 + r, w->term_history[lidx], w->w - 4, th->base);
+                            }
+                        }
 
-                fill_rect(win_x + 46, win_y + 8, 10, 3, th->sel);
-                put_str_at(win_x + 47, win_y + 9, "4. Exit", th->sel);
+                        char pfx[32]; int pn = 0; pfx[0] = 0;
+                        h_apnd(pfx, &pn, sizeof(pfx), cur_user);
+                        h_apnd(pfx, &pn, sizeof(pfx), ":/ > ");
+                        put_str_clip(sx + 2, sy + wh - 2, pfx, w->w - 4, is_active ? th->head : th->dim);
+                        put_str_clip(sx + 2 + pn, sy + wh - 2, w->term_cmd, w->w - 4 - pn, th->base);
+                        if (is_active) {
+                            put_at_clip(sx + 2 + pn + w->term_len, sy + wh - 2, '_', th->mark);
+                        }
+                    } else if (w->type == GWIN_CATALOG) {
+                        int vis_items = wh - 3;
+                        for (int r = 0; r < vis_items && (w->cat_scroll + r < N_ALL_APPS); r++) {
+                            int idx = w->cat_scroll + r;
+                            int is_sel = (idx == w->cat_sel);
+                            u8 cat_at = is_sel ? th->sel : th->base;
 
-                put_clip(win_x + 3, win_y + 13, "Hotkeys: 1-4 launch app, F2 change theme, Esc/Q exit", win_w - 6, th->dlg);
-                put_clip(win_x + 3, win_y + 14, "Mouse: click buttons or icons to launch applications", win_w - 6, th->dlg);
+                            char item_str[128]; int in = 0; item_str[0] = 0;
+                            h_apnd(item_str, &in, sizeof(item_str), is_sel ? "> " : "  ");
+                            h_apnd(item_str, &in, sizeof(item_str), ALL_APPS[idx].name);
+                            while (in < 14) item_str[in++] = ' ';
+                            item_str[in] = 0;
+                            h_apnd(item_str, &in, sizeof(item_str), "- ");
+                            h_apnd(item_str, &in, sizeof(item_str), ALL_APPS[idx].desc);
+
+                            fill_rect_clip(sx + 2, sy + 1 + r, w->w - 4, 1, ' ', cat_at);
+                            put_str_clip(sx + 2, sy + 1 + r, item_str, w->w - 4, cat_at);
+                        }
+                        put_str_clip(sx + 2, sy + wh - 2, "[Enter / 2x-Клик: Запуск] [Стрелки: Выбор]", w->w - 4, th->mark);
+                    } else if (w->type == GWIN_APP_CARD) {
+                        put_str_clip(sx + 3, sy + 2, w->app_desc, w->w - 6, th->base);
+                        put_str_clip(sx + 3, sy + 3, "Команда: ", w->w - 6, th->dim);
+                        put_str_clip(sx + 12, sy + 3, w->app_cmd, w->w - 15, th->mark);
+                        fill_rect_clip(sx + 4, sy + 5, 18, 1, ' ', is_active ? th->sel : th->dlgbtn);
+                        put_str_clip(sx + 5, sy + 5, "[ Запустить ]", 16, is_active ? th->sel : th->dlgbtn);
+                    }
+                }
             }
 
+            /* 3. Верхняя панель HUD / Управление холстом */
+            fill_rect(0, 0, W, 1, th->title);
+            put_clip(1, 0, "[CravgOS Canvas]", 17, th->sel);
+
+            char cambuf[24]; int cn = 0; cambuf[0] = 0;
+            h_apnd(cambuf, &cn, sizeof(cambuf), "[X:"); apnd_i(cambuf, &cn, sizeof(cambuf), cam_x);
+            h_apnd(cambuf, &cn, sizeof(cambuf), " Y:"); apnd_i(cambuf, &cn, sizeof(cambuf), cam_y);
+            h_apnd(cambuf, &cn, sizeof(cambuf), "]");
+            put_str_at(19, 0, cambuf, th->title);
+
+            put_clip(36, 0, "[+Терминал]", 11, th->dlgbtn);
+            put_clip(48, 0, "[Каталог]", 9, th->dlgbtn);
+            put_clip(58, 0, "[FM]", 4, th->dlgbtn);
+            put_clip(63, 0, "[Тема]", 6, th->dlgbtn);
+            put_clip(70, 0, kbd_ru ? "[RU]" : "[EN]", 4, th->mark);
+            put_clip(75, 0, "[X]", 3, th->mark);
+
+            /* 4. Всплывающее меню по двойному клику */
+            if (popup_open) {
+                int pw = 27, ph = N_POPUP_APPS + 4;
+                fill_rect_clip(popup_sx, popup_sy, pw, ph, ' ', th->dlg);
+                draw_box(popup_sx, popup_sy, pw, ph, th->dlg, 1);
+                put_str_clip(popup_sx + 2, popup_sy, "[ + Приложения ]", pw - 4, th->title);
+
+                for (int i = 0; i < N_POPUP_APPS; i++) {
+                    u8 at = (i == popup_sel) ? th->sel : th->dlg;
+                    char pitem[64]; int pin = 0; pitem[0] = 0;
+                    char num[4]; num[0] = '1' + i; num[1] = '.'; num[2] = ' '; num[3] = 0;
+                    h_apnd(pitem, &pin, sizeof(pitem), num);
+                    h_apnd(pitem, &pin, sizeof(pitem), POPUP_APPS[i].name);
+                    fill_rect_clip(popup_sx + 1, popup_sy + 1 + i, pw - 2, 1, ' ', at);
+                    put_str_clip(popup_sx + 2, popup_sy + 1 + i, pitem, pw - 4, at);
+                }
+
+                for (int lx = 1; lx < pw - 1; lx++) {
+                    put_at_clip(popup_sx + lx, popup_sy + 1 + N_POPUP_APPS, (char)0xC4, th->dlg);
+                }
+
+                u8 cat_at = (popup_sel == N_POPUP_APPS) ? th->sel : th->dlg;
+                fill_rect_clip(popup_sx + 1, popup_sy + 2 + N_POPUP_APPS, pw - 2, 1, ' ', cat_at);
+                put_str_clip(popup_sx + 2, popup_sy + 2 + N_POPUP_APPS, "0. Все приложения...", pw - 4, cat_at);
+
+                for (int j = 1; j <= ph; j++) shade(popup_sx + pw, popup_sy + j);
+                for (int i = 1; i <= pw; i++) shade(popup_sx + i, popup_sy + ph);
+            }
+
+            /* 5. Нижняя панель подсказок */
             fill_rect(0, H - 1, W, 1, th->bar);
-            put_clip(1, H - 1, "Ready | Click app or press 1-4 | F2: Theme | Q / Esc: Exit to CLI", W - 2, th->bar);
+            put_clip(1, H - 1, "[ПКМ: Тянуть холст] [2x-Клик: Меню] [Tab: Окно] [Home: 0,0] [Q/Esc: Выход]", W - 2, th->bar);
 
             mouse_draw();
         }
 
         int k = ui_wait();
-        if (k == UI_MOVE) { mouse_draw(); continue; }
-        if (k == 27 || k == 'q' || k == 'Q') break;
-        if (k == K_F1 + 1 || k == 't' || k == 'T') {
+
+        if (k == UI_MOVE) {
+            if (drag_win >= 0 && (m_buttons & 1)) {
+                gwins[drag_win].wx = (mx - drag_ox) + cam_x;
+                gwins[drag_win].wy = (my - drag_oy) + cam_y - 1;
+                redraw = 1;
+                continue;
+            } else if (drag_win >= 0 && !(m_buttons & 1)) {
+                drag_win = -1;
+                redraw = 1;
+                continue;
+            }
+
+            if (panning && (m_buttons & 2)) {
+                cam_x = pan_orig_cx + (pan_start_mx - mx) * 2;
+                cam_y = pan_orig_cy + (pan_start_my - my);
+                redraw = 1;
+                continue;
+            } else if (panning && !(m_buttons & 2)) {
+                panning = 0;
+                redraw = 1;
+                continue;
+            }
+
+            if ((m_buttons & 2) && !panning) {
+                panning = 1;
+                pan_start_mx = mx;
+                pan_start_my = my;
+                pan_orig_cx = cam_x;
+                pan_orig_cy = cam_y;
+                redraw = 1;
+                continue;
+            }
+
+            mouse_draw();
+            continue;
+        }
+
+        if (k == UI_WHEEL) {
+            if (win_count > 0 && gwins[win_z[0]].used && gwins[win_z[0]].type == GWIN_TERMINAL) {
+                struct gui_win *tw = &gwins[win_z[0]];
+                tw->term_scroll -= ui_wheel * 2;
+                if (tw->term_scroll < 0) tw->term_scroll = 0;
+            } else {
+                cam_y += ui_wheel * 2;
+            }
+            redraw = 1;
+            continue;
+        }
+
+        if (k == UI_RCLICK) {
+            if (popup_open) {
+                popup_open = 0;
+                redraw = 1;
+                continue;
+            }
+            popup_open = 1;
+            popup_sx = ui_cx;
+            popup_sy = ui_cy;
+            if (popup_sx + 27 >= W) popup_sx = W - 28;
+            if (popup_sy + N_POPUP_APPS + 4 >= H - 1) popup_sy = H - (N_POPUP_APPS + 5);
+            popup_sel = 0;
+            popup_spawn_wx = ui_cx + cam_x;
+            popup_spawn_wy = ui_cy + cam_y - 1;
+            redraw = 1;
+            continue;
+        }
+
+        if (k == UI_CLICK) {
+            if (popup_open) {
+                int pw = 27, ph = N_POPUP_APPS + 4;
+                if (ui_cx >= popup_sx && ui_cx < popup_sx + pw && ui_cy >= popup_sy && ui_cy < popup_sy + ph) {
+                    int clicked_row = ui_cy - (popup_sy + 1);
+                    if (clicked_row >= 0 && clicked_row < N_POPUP_APPS) {
+                        launch_app(&POPUP_APPS[clicked_row], popup_spawn_wx, popup_spawn_wy);
+                    } else if (clicked_row == N_POPUP_APPS + 1) {
+                        spawn_catalog_win(popup_spawn_wx, popup_spawn_wy);
+                    }
+                }
+                popup_open = 0;
+                redraw = 1;
+                continue;
+            }
+
+            if (ui_cy == 0) {
+                if (ui_cx >= 19 && ui_cx <= 34) { cam_x = 0; cam_y = 0; redraw = 1; continue; }
+                if (ui_cx >= 36 && ui_cx <= 46) { spawn_terminal_win(cam_x + 6, cam_y + 2, 68, 17); redraw = 1; continue; }
+                if (ui_cx >= 48 && ui_cx <= 56) { spawn_catalog_win(cam_x + 12, cam_y + 3); redraw = 1; continue; }
+                if (ui_cx >= 58 && ui_cx <= 61) {
+                    mouse_forget(); commander(); mouse_ui = 1; cursor_hide(); redraw = 1; continue;
+                }
+                if (ui_cx >= 63 && ui_cx <= 68) {
+                    int t = dlg_theme(); if (t >= 0) theme_apply(t); redraw = 1; continue;
+                }
+                if (ui_cx >= 70 && ui_cx <= 73) { kbd_ru ^= 1; redraw = 1; continue; }
+                if (ui_cx >= 75) { running = 0; break; }
+                continue;
+            }
+
+            int hit_win = -1;
+            for (int zi = 0; zi < win_count; zi++) {
+                int slot = win_z[zi];
+                struct gui_win *w = &gwins[slot];
+                if (!w->used) continue;
+
+                int sx = w->wx - cam_x;
+                int sy = w->wy - cam_y + 1;
+                int wh = w->minimized ? 1 : w->h;
+
+                if (ui_cx >= sx && ui_cx < sx + w->w && ui_cy >= sy && ui_cy < sy + wh) {
+                    hit_win = slot;
+                    bring_to_front(slot);
+
+                    int lx = ui_cx - sx;
+                    int ly = ui_cy - sy;
+
+                    if (ly == 0) {
+                        if (lx >= w->w - 4 && lx <= w->w - 2) {
+                            w->used = 0;
+                            remove_from_z(slot);
+                        } else if (lx >= w->w - 7 && lx <= w->w - 5) {
+                            w->minimized ^= 1;
+                        } else {
+                            drag_win = slot;
+                            drag_ox = lx;
+                            drag_oy = ly;
+                        }
+                    } else if (!w->minimized) {
+                        if (w->type == GWIN_CATALOG) {
+                            int r = ly - 1;
+                            if (r >= 0 && w->cat_scroll + r < N_ALL_APPS) {
+                                w->cat_sel = w->cat_scroll + r;
+                                u32 now = now_ms();
+                                if (canvas_last_click && (now - canvas_click_time < 550) && canvas_click_x == ui_cx && canvas_click_y == ui_cy) {
+                                    launch_app(&ALL_APPS[w->cat_sel], w->wx + 4, w->wy + 4);
+                                    canvas_last_click = 0;
+                                } else {
+                                    canvas_last_click = 1;
+                                    canvas_click_time = now;
+                                    canvas_click_x = ui_cx;
+                                    canvas_click_y = ui_cy;
+                                }
+                            }
+                        } else if (w->type == GWIN_APP_CARD) {
+                            if (ly == 5 && lx >= 4 && lx <= 22) {
+                                struct app_item app;
+                                app.cmd = w->app_cmd;
+                                app.name = w->title;
+                                app.desc = w->app_desc;
+                                app.is_fullscreen = 1;
+                                launch_app(&app, w->wx + 2, w->wy + 2);
+                            }
+                        }
+                    }
+                    redraw = 1;
+                    break;
+                }
+            }
+
+            if (hit_win < 0 && ui_cy >= 1 && ui_cy < H - 1) {
+                u32 now = now_ms();
+                if (canvas_last_click && (now - canvas_click_time < 550) &&
+                    (iabs(ui_cx - canvas_click_x) <= 2) && (iabs(ui_cy - canvas_click_y) <= 1)) {
+                    popup_open = 1;
+                    popup_sx = ui_cx;
+                    popup_sy = ui_cy;
+                    if (popup_sx + 27 >= W) popup_sx = W - 28;
+                    if (popup_sy + N_POPUP_APPS + 4 >= H - 1) popup_sy = H - (N_POPUP_APPS + 5);
+                    popup_sel = 0;
+                    popup_spawn_wx = ui_cx + cam_x;
+                    popup_spawn_wy = ui_cy + cam_y - 1;
+                    canvas_last_click = 0;
+                } else {
+                    canvas_last_click = 1;
+                    canvas_click_time = now;
+                    canvas_click_x = ui_cx;
+                    canvas_click_y = ui_cy;
+                }
+                redraw = 1;
+            }
+            continue;
+        }
+
+        if (popup_open) {
+            if (k == 27) { popup_open = 0; redraw = 1; continue; }
+            if (k >= '1' && k <= '9') {
+                int idx = k - '1';
+                if (idx < N_POPUP_APPS) launch_app(&POPUP_APPS[idx], popup_spawn_wx, popup_spawn_wy);
+                popup_open = 0; redraw = 1; continue;
+            }
+            if (k == '0') {
+                spawn_catalog_win(popup_spawn_wx, popup_spawn_wy);
+                popup_open = 0; redraw = 1; continue;
+            }
+            if (k == K_UP) { if (popup_sel > 0) popup_sel--; redraw = 1; continue; }
+            if (k == K_DOWN) { if (popup_sel < N_POPUP_APPS) popup_sel++; redraw = 1; continue; }
+            if (k == '\n') {
+                if (popup_sel < N_POPUP_APPS) launch_app(&POPUP_APPS[popup_sel], popup_spawn_wx, popup_spawn_wy);
+                else spawn_catalog_win(popup_spawn_wx, popup_spawn_wy);
+                popup_open = 0; redraw = 1; continue;
+            }
+            continue;
+        }
+
+        /* Горячие клавиши F1..F6, F10 */
+        if (k == K_F1 || k == K_F1 + 2) { /* F1 или F3: всплывающее меню */
+            popup_open ^= 1;
+            popup_sx = W / 2 - 14;
+            popup_sy = H / 2 - (N_POPUP_APPS + 4) / 2;
+            popup_sel = 0;
+            popup_spawn_wx = cam_x + 10;
+            popup_spawn_wy = cam_y + 4;
+            redraw = 1;
+            continue;
+        }
+        if (k == K_F1 + 1) { /* F2: тема оформления */
             theme_apply((theme_index() + 1) % NTHEMES);
             redraw = 1;
             continue;
         }
-        if (k == '1') {
+        if (k == K_F1 + 3) { /* F4: каталог всех приложений */
+            spawn_catalog_win(cam_x + 12, cam_y + 3);
+            redraw = 1;
+            continue;
+        }
+        if (k == K_F1 + 4) { /* F5: новый терминал */
+            spawn_terminal_win(cam_x + 8, cam_y + 3, 68, 17);
+            redraw = 1;
+            continue;
+        }
+        if (k == K_F1 + 5) { /* F6: файловый менеджер */
+            mouse_forget();
             commander();
+            mouse_ui = 1;
+            cursor_hide();
             redraw = 1;
             continue;
         }
-        if (k == '2') {
-            cmd_web("");
-            redraw = 1;
-            continue;
-        }
-        if (k == '3') {
-            int t = dlg_theme(); if (t >= 0) theme_apply(t);
-            redraw = 1;
-            continue;
-        }
-        if (k == '4') {
+        if (k == K_F1 + 9) { /* F10: выход из холста */
+            running = 0;
             break;
         }
-        if (k == UI_CLICK) {
-            if (ui_cy == 0 && ui_cx >= W - 5) break;
-            if (active_win && ui_cy == win_y && ui_cx >= win_x + win_w - 4 && ui_cx <= win_x + win_w - 1) {
-                break;
+
+        if (k == '\t') {
+            if (win_count > 1) {
+                int top = win_z[0];
+                for (int i = 0; i < win_count - 1; i++) win_z[i] = win_z[i + 1];
+                win_z[win_count - 1] = top;
+                redraw = 1;
             }
-            if (active_win && ui_cy >= win_y + 8 && ui_cy <= win_y + 10) {
-                if (ui_cx >= win_x + 4 && ui_cx <= win_x + 16) { commander(); redraw = 1; continue; }
-                if (ui_cx >= win_x + 18 && ui_cx <= win_x + 30) { cmd_web(""); redraw = 1; continue; }
-                if (ui_cx >= win_x + 32 && ui_cx <= win_x + 44) { int t = dlg_theme(); if (t >= 0) theme_apply(t); redraw = 1; continue; }
-                if (ui_cx >= win_x + 46 && ui_cx <= win_x + 56) { break; }
-            }
-            if (ui_cx >= 1 && ui_cx <= 15) {
-                if (ui_cy >= 2 && ui_cy <= 3) { commander(); redraw = 1; continue; }
-                if (ui_cy >= 5 && ui_cy <= 6) { cmd_web(""); redraw = 1; continue; }
-                if (ui_cy >= 8 && ui_cy <= 9) { int t = dlg_theme(); if (t >= 0) theme_apply(t); redraw = 1; continue; }
-                if (ui_cy >= 11 && ui_cy <= 12) { break; }
+            continue;
+        }
+        if (k == K_HOME) {
+            cam_x = 0; cam_y = 0;
+            redraw = 1;
+            continue;
+        }
+
+        if (win_count > 0 && gwins[win_z[0]].used) {
+            struct gui_win *active_win = &gwins[win_z[0]];
+
+            if (active_win->type == GWIN_TERMINAL) {
+                if (k == '\n') {
+                    win_term_execute(active_win);
+                    redraw = 1;
+                } else if (k == 3) { /* Ctrl+C */
+                    active_win->term_len = 0;
+                    active_win->term_cmd[0] = 0;
+                    win_term_add_line(active_win, "^C");
+                    redraw = 1;
+                } else if (k == 27) { /* Esc: очистить команду или закрыть окно */
+                    if (active_win->term_len > 0) {
+                        active_win->term_len = 0;
+                        active_win->term_cmd[0] = 0;
+                        redraw = 1;
+                    } else {
+                        running = 0;
+                        break;
+                    }
+                } else if (k == '\b') {
+                    if (active_win->term_len > 0) {
+                        active_win->term_cmd[--active_win->term_len] = 0;
+                        redraw = 1;
+                    }
+                } else if (k == K_UP) {
+                    active_win->term_scroll++;
+                    redraw = 1;
+                } else if (k == K_DOWN) {
+                    if (active_win->term_scroll > 0) active_win->term_scroll--;
+                    redraw = 1;
+                } else if (k == K_PGUP) {
+                    active_win->term_scroll += 5;
+                    redraw = 1;
+                } else if (k == K_PGDN) {
+                    active_win->term_scroll -= 5;
+                    if (active_win->term_scroll < 0) active_win->term_scroll = 0;
+                    redraw = 1;
+                } else if (k == K_LEFT) {
+                    cam_x -= 3; redraw = 1;
+                } else if (k == K_RIGHT) {
+                    cam_x += 3; redraw = 1;
+                } else if (((k >= 32 && k < 127) || (k >= 0x80 && k <= 0xFF)) &&
+                           active_win->term_len < (int)sizeof(active_win->term_cmd) - 2) {
+                    active_win->term_cmd[active_win->term_len++] = (char)k;
+                    active_win->term_cmd[active_win->term_len] = 0;
+                    redraw = 1;
+                }
+                continue;
+            } else if (active_win->type == GWIN_CATALOG) {
+                if (k == 27) {
+                    active_win->used = 0;
+                    remove_from_z(active_win - gwins);
+                    redraw = 1;
+                    continue;
+                }
+                if (k == K_UP) {
+                    if (active_win->cat_sel > 0) active_win->cat_sel--;
+                    if (active_win->cat_sel < active_win->cat_scroll) active_win->cat_scroll = active_win->cat_sel;
+                    redraw = 1;
+                } else if (k == K_DOWN) {
+                    if (active_win->cat_sel < N_ALL_APPS - 1) active_win->cat_sel++;
+                    int vis = active_win->h - 3;
+                    if (active_win->cat_sel >= active_win->cat_scroll + vis) {
+                        active_win->cat_scroll = active_win->cat_sel - vis + 1;
+                    }
+                    redraw = 1;
+                } else if (k == '\n') {
+                    launch_app(&ALL_APPS[active_win->cat_sel], active_win->wx + 4, active_win->wy + 4);
+                    redraw = 1;
+                }
+                continue;
             }
         }
+
+        if (k == 27 || k == 'q' || k == 'Q') {
+            running = 0;
+            break;
+        }
+
+        if (k == K_LEFT) { cam_x -= 3; redraw = 1; }
+        else if (k == K_RIGHT) { cam_x += 3; redraw = 1; }
+        else if (k == K_UP) { cam_y -= 2; redraw = 1; }
+        else if (k == K_DOWN) { cam_y += 2; redraw = 1; }
     }
 
     mouse_ui = omui;

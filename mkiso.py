@@ -159,7 +159,7 @@ def main():
 
     # 2. Initial / Default Entry (BIOS boot image)
     e = bytearray(32); e[0] = 0x88; e[1] = 0
-    e[6:8] = struct.pack('<H', -(-len(img) // 512)); e[8:12] = struct.pack('<I', IMG_SEC)
+    e[6:8] = struct.pack('<H', img_sectors * 4); e[8:12] = struct.pack('<I', IMG_SEC)
 
     cat[0:32] = v; cat[32:64] = e
 
