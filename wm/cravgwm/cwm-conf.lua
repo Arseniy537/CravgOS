@@ -39,6 +39,41 @@ return function(W)
     return r
   end
   C.acts = acts
+  local function add_k(cfg, spec, acts_list)
+    local k = C.key(spec)
+    if k then k.acts = acts_list cfg.keys[#cfg.keys + 1] = k end
+  end
+  local function def_keys(cfg)
+    for _, b in ipairs({
+      {"A-F4", "Close"}, {"W-Return", "Execute", "cravgterm"}, {"W-t", "Execute", "cravgterm"},
+      {"W-d", "Execute", "cravgrun"}, {"W-r", "Execute", "cravgrun"}, {"W-e", "Execute", "cravgfm"},
+      {"A-Tab", "NextWindow"}, {"C-A-BackSpace", "Exit"}, {"W-m", "ToggleMaximize"}
+    }) do add_k(cfg, b[1], {{name = b[2], a = b[3] and {command = b[3]} or {}}}) end
+    for i = 1, 4 do
+      add_k(cfg, "W-" .. i, {{name = "GoToDesktop", a = {to = tostring(i)}}})
+      add_k(cfg, "W-S-" .. i, {{name = "SendToDesktop", a = {to = tostring(i)}}})
+    end
+  end
+  local function def_mouse()
+    local function a(n) return {{name = n, a = {}}} end
+    return {
+      Titlebar = {{m = 0, b = 1, how = "Drag", acts = a("Move")}, {m = 0, b = 1, how = "DoubleClick", acts = a("ToggleMaximize")}},
+      Close = {{m = 0, b = 1, how = "Click", acts = a("Close")}},
+      Maximize = {{m = 0, b = 1, how = "Click", acts = a("ToggleMaximize")}},
+      Iconify = {{m = 0, b = 1, how = "Click", acts = a("Iconify")}},
+      Frame = {{m = 4, b = 1, how = "Drag", acts = a("Move")}, {m = 4, b = 2, how = "Drag", acts = a("Resize")}},
+      BRCorner = {{m = 0, b = 1, how = "Drag", acts = a("Resize")}},
+      Root = {{m = 0, b = 2, how = "Press", acts = {{name = "ShowMenu", a = {menu = "root-menu"}}}}}
+    }
+  end
+  local function apply_defaults(cfg)
+    cfg.desktops = 4
+    cfg.dnames = {"web", "code", "files", "misc"}
+    if fs.exists("/apps/cravgbg") then cfg.autostart[#cfg.autostart + 1] = "cravgbg" end
+    if fs.exists("/apps/cravgbar") then cfg.autostart[#cfg.autostart + 1] = "cravgbar" end
+    def_keys(cfg)
+    cfg.mouse = def_mouse()
+  end
   local function defaults()
     return {desktops = 1, dnames = {}, focus = {model = "click", raise = true}, place = "center", keys = {}, mouse = {}, rules = {},
       autostart = {}, menu = C.path .. "menu.xml", wheel = 1,
@@ -50,8 +85,15 @@ return function(W)
   function C.load()
     local cfg = defaults()
     W.cfg = cfg
+    if not fs.exists(C.path .. "rc.xml") then
+      apply_defaults(cfg)
+      return cfg
+    end
     local root, err = X.load(C.path .. "rc.xml")
-    if not root then W.log("rc.xml: " .. err) return cfg end
+    if not root then
+      apply_defaults(cfg)
+      return cfg
+    end
     local th = cfg.theme
     for _, n in ipairs(root.k) do
       local t, a = n.tag, n.a
@@ -104,6 +146,8 @@ return function(W)
         end
       end
     end
+    if #cfg.keys == 0 then def_keys(cfg) end
+    if not next(cfg.mouse) then cfg.mouse = def_mouse() end
     return cfg
   end
 end

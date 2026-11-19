@@ -126,13 +126,13 @@ static void gc_markv(struct lval v) {
     }
 }
 static void gc_markw(u64 w) {                                   /* слово со стека: может быть указателем внутрь объекта */
-    if (w < (u64)(unsigned long)lua_heap || w >= (u64)(unsigned long)(lua_heap + lua_top)) return;
-    u32 idx = (u32)((w - (u64)(unsigned long)lua_heap) >> 4);
+    if (w < (u64)(uintptr_t)lua_heap || w >= (u64)(uintptr_t)(lua_heap + lua_top)) return;
+    u32 idx = (u32)((w - (u64)(uintptr_t)lua_heap) >> 4);
     while (idx > 0 && !gc_bmget(idx)) idx--;
     u32 off = idx << 4;
     struct gch *h = gc_h(off);
     if (h->kind == GK_FREE || (h->flags & 1) || h->size < 16 || off + h->size > lua_top) return;
-    if (w >= (u64)(unsigned long)lua_heap + off + h->size) return;
+    if (w >= (u64)(uintptr_t)lua_heap + off + h->size) return;
     h->flags |= 1; gc_push(off);
 }
 static void gc_scan_block(u32 off) {
@@ -473,7 +473,7 @@ struct fstate { struct fstate *up; struct fproto *fp; struct lvar *act[LUA_MAXAC
 static struct fstate *FS;
 static int pdepth;
 static void gc_mark_extra(void) {
-    gc_markw((u64)(unsigned long)LX.p); gc_markp(LX.s); gc_markw((u64)(unsigned long)PCHUNK); gc_markp(FS); gc_markw((u64)(unsigned long)L.chunk);
+    gc_markw((u64)(uintptr_t)LX.p); gc_markp(LX.s); gc_markw((u64)(uintptr_t)PCHUNK); gc_markp(FS); gc_markw((u64)(uintptr_t)L.chunk);
 }
 
 static struct nd *nnew(int k) {

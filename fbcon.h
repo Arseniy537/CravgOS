@@ -4,6 +4,8 @@
 #ifndef FBCON_H
 #define FBCON_H
 static int stas_try_app(const char *cmd);              /* stas.h */
+static void stas_install(const char *name);
+static void stas_update(void);
 static void reboot(void);
 static u16 fbc_shadow[W * H];
 static int fbc_scale = 1, fbc_ox, fbc_oy, fbc_curx = -1, fbc_cury = -1, fbc_curvis;
@@ -50,6 +52,8 @@ static void fbc_sync(void) {
 /* вызывается при старте ядра: включить пиксельный режим, если загрузчик его включил (fbinfo) */
 static void gfx_boot(void) {
     if (*(const u32 *)fbinfo != 0x31494246u || fbinfo[14] != 32) return;
+    vga = vga_mem;
+    for (int i = 0; i < W * H; i++) vga_mem[i] = (0x0E << 8) | ' ';
     u32 base = *(const u32 *)(fbinfo + 4), pitch = *(const u16 *)(fbinfo + 12);
     int w = *(const u16 *)(fbinfo + 8), h = *(const u16 *)(fbinfo + 10);
     u32 mb = mem_mib();
@@ -60,11 +64,12 @@ static void gfx_boot(void) {
     for (int i = 0; i < 4096; i++) { gx_font[i] = romfont[i]; if (romfont[i]) nz++; }
     gx_font_ok = nz > 200;
     for (int i = 0; i < CYR_N; i++) for (int r = 0; r < 16; r++) gx_font[cyr_code[i] * 16 + r] = cyr_font[i][r];
-    if (gx_setup((u8 *)(unsigned long)base, pitch, w, h, fbinfo[15], fbinfo[16], fbinfo[17], (u8 *)0x1000000, avail) < 0) return;
+    if (gx_setup((u8 *)(uintptr_t)base, pitch, w, h, fbinfo[15], fbinfo[16], fbinfo[17], (u8 *)0x1000000, avail) < 0) return;
     fbc_scale = 1;
     while (w >= 640 * (fbc_scale + 1) && h >= 400 * (fbc_scale + 1)) fbc_scale++;
     fbc_ox = (w - 640 * fbc_scale) / 2; fbc_oy = (h - 400 * fbc_scale) / 2;
     fbc_force = 1;
+    fbc_sync();
 }
 static void cmd_gfxinfo(void) {
     if (!gx_ok) {
@@ -73,7 +78,7 @@ static void cmd_gfxinfo(void) {
         return;
     }
     puts("Pixel mode: "); putu((u32)gx_w); putc('x'); putu((u32)gx_h); puts(" 32 bpp, framebuffer at 0x");
-    puthex((u32)(unsigned long)gx_lfb, 8); puts(", pitch "); putu(gx_pitch);
+    puthex((u32)(uintptr_t)gx_lfb, 8); puts(", pitch "); putu(gx_pitch);
     puts("\nColor order: R<<"); putu((u32)gx_rp); puts(" G<<"); putu((u32)gx_gp); puts(" B<<"); putu((u32)gx_bp);
     puts("\nSurface memory: "); putu(gx_memsz / 1024 / 1024); puts(" MiB, free "); putu(gx_free_bytes() / 1024 / 1024); puts(" MiB\n");
     puts("Console font: "); puts(gx_font_ok ? "BIOS 8x16 + Cyrillic" : "missing (text will be blank)"); puts(", text scale x"); putu((u32)fbc_scale); putc('\n');
@@ -81,6 +86,17 @@ static void cmd_gfxinfo(void) {
 static void cmd_wm(char *args) {
     (void)args;
     if (!gx_ok) { puts("wm needs pixel mode. Run 'wmboot' (reboots into 1024x768), then 'wm'.\n"); return; }
+    if (fs_resolve("/etc/cravgwm/exec-allow") < 0) {
+        fs_create("/etc", 1);
+        fs_create("/etc/cravgwm", 1);
+        int f = fs_create("/etc/cravgwm/exec-allow", 0);
+        if (f >= 0) fs_write(f, "/apps/cravgterm\n", 16, 0);
+    }
+    if (fs_resolve("/apps/cravgwm") < 0) {
+        puts("Installing cravgwm and companion packages...\n");
+        if (fs_resolve("/lua/.index") < 0) stas_update();
+        stas_install("cravgwm");
+    }
     if (!stas_try_app("cravgwm")) puts("cravgwm is not installed: stas update, then stas install cravgwm\n");
     fbc_force = 1;                                     /* вернувшись из WM, перерисовать консоль */
 }

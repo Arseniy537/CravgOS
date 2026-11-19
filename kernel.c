@@ -17,24 +17,31 @@ static void cpuid(u32 leaf, u32 *a, u32 *b, u32 *c, u32 *d) {
     __asm__ volatile("cpuid":"=a"(*a),"=b"(*b),"=c"(*c),"=d"(*d):"a"(leaf),"c"(0));
 }
 
+static int gx_ok;
+static int fbc_force;
+static void fbc_sync(void);
+
 /* ---------- VGA текстовый режим 80x25 ---------- */
 #define W 80
 #define H 25
-static volatile u16 *const vga = (u16 *)0xB8000;
+static u16 vga_mem[W * H];
+static volatile u16 *vga = (u16 *)0xB8000;
 static int cx, cy;
 static u8 color = 0x07;
 
 static void cursor(void) {
+    if (gx_ok) return;
     u16 pos = cy * W + cx;
     outb(0x3D4, 14); outb(0x3D5, pos >> 8);
     outb(0x3D4, 15); outb(0x3D5, pos & 0xFF);
 }
 static int fbc_cur = 1;                              /* курсор консоли виден (для пиксельного режима) */
-static void cursor_hide(void) { fbc_cur = 0; outb(0x3D4, 0x0A); outb(0x3D5, 0x20); }
-static void cursor_show(void) { fbc_cur = 1; outb(0x3D4, 0x0A); outb(0x3D5, 14); outb(0x3D4, 0x0B); outb(0x3D5, 15); }
+static void cursor_hide(void) { fbc_cur = 0; if (!gx_ok) { outb(0x3D4, 0x0A); outb(0x3D5, 0x20); } }
+static void cursor_show(void) { fbc_cur = 1; if (!gx_ok) { outb(0x3D4, 0x0A); outb(0x3D5, 14); outb(0x3D4, 0x0B); outb(0x3D5, 15); } }
 static void clear(void) {
     for (int i = 0; i < W * H; i++) vga[i] = (color << 8) | ' ';
     cx = cy = 0; cursor();
+    if (gx_ok) { fbc_force = 1; fbc_sync(); }
 }
 static void scroll(void) {
     for (int i = 0; i < W * (H - 1); i++) vga[i] = vga[i + W];
@@ -99,7 +106,14 @@ static void theme_apply(int i) {
 static int theme_index(void) { return (int)(th - themes); }
 
 /* ---------- Кириллица: свой шрифт в видеопамяти, 16 цветов фона ---------- */
+extern const u8 fbinfo[32];
+extern const u8 romfont[4096];
+static inline int fb_active(void) {
+    return *(const u32 *)fbinfo == 0x31494246u && fbinfo[14] == 32;
+}
+
 static void vga_font_load(void) {
+    if (fb_active()) return;
     volatile u8 *fm = (volatile u8 *)0xA0000;
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);          /* синхронный сброс секвенсора */
     outb(0x3C4, 0x02); outb(0x3C5, 0x04);          /* запись только в plane 2 (там шрифт) */
@@ -132,6 +146,7 @@ static void vga_font_load(void) {
     outb(0x3CE, 0x08); outb(0x3CF, 0xFF);
 }
 static void vga_blink_off(void) {                  /* бит 7 атрибута = яркий фон (16 цветов) вместо мигания */
+    if (fb_active()) return;
     inb(0x3DA); outb(0x3C0, 0x30);
     u8 v = inb(0x3C1);
     outb(0x3C0, v & ~0x08);
@@ -170,6 +185,7 @@ static u32 now_ms(void) {              /* миллисекунды; вызыва
 }
 static u32 uptime_s(void) { return now_ms() / 1000u; }
 static void delay_ms(u32 ms) {
+    fbc_sync();
     u32 need = ms * 1193u, got = 0;
     u16 last = pit_read();
     while (got < need) { u16 now = pit_read(); got += (u16)(last - now); last = now; }
@@ -312,7 +328,6 @@ static void ru_init(void) {                        /* ЙЦУКЕН в кодов
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) { map_ru[t[i].sc] = t[i].lo; smap_ru[t[i].sc] = t[i].up; }
     smap_ru[0x03] = '"'; smap_ru[0x04] = '#'; smap_ru[0x05] = ';'; smap_ru[0x07] = ':'; smap_ru[0x08] = '?';
 }
-static void fbc_sync(void);
 static int key_poll(void) {            /* -1 если клавиши нет */
     now_ms(); fbc_sync();
     u8 st = inb(0x64);
@@ -574,82 +589,85 @@ struct disk_super {
 #define DISK_FSN_LBA 2          /* таблица узлов: 8 секторов */
 #define DISK_FSN_SECS 8
 #define DISK_DATA_LBA 16        /* данные файлов (формат 2) */
+static struct disk_super disk_sp;
+static u8 disk_sec_buf[512 * DISK_FSN_SECS];
+
 static int disk_save(void) {
     if (!ata_present) return -1;
-    struct disk_super sp;
-    for (unsigned i = 0; i < sizeof sp; i++) ((u8 *)&sp)[i] = 0;
-    sp.magic = CRAVG_DISK_MAGIC;
-    sp.version = 2;
-    sp.theme_idx = (u32)theme_index();
-    sp.kbd_ru = (u32)kbd_ru;
-    sp.fsn_bytes = (u32)sizeof fsn;
-    sp.data_bytes = (u32)sizeof fsdata;
-    sp.fsn_crc = calc_checksum(fsn, sizeof fsn);
-    sp.data_crc = calc_checksum(fsdata, sizeof fsdata);
-    sp.setup_done = (u32)setup_done;
+    struct disk_super *sp = &disk_sp;
+    for (unsigned i = 0; i < sizeof(*sp); i++) ((u8 *)sp)[i] = 0;
+    sp->magic = CRAVG_DISK_MAGIC;
+    sp->version = 2;
+    sp->theme_idx = (u32)theme_index();
+    sp->kbd_ru = (u32)kbd_ru;
+    sp->fsn_bytes = (u32)sizeof fsn;
+    sp->data_bytes = (u32)sizeof fsdata;
+    sp->fsn_crc = calc_checksum(fsn, sizeof fsn);
+    sp->data_crc = calc_checksum(fsdata, sizeof fsdata);
+    sp->setup_done = (u32)setup_done;
     for (int i = 0; i < 24; i++) {
-        sp.username[i] = cur_user[i];
-        sp.hostname[i] = cur_host[i];
+        sp->username[i] = cur_user[i];
+        sp->hostname[i] = cur_host[i];
     }
     for (int i = 0; i < 32; i++) {
-        sp.wifi_ssid[i] = net_prof.ssid[i];
-        sp.wifi_pass[i] = net_prof.pass[i];
+        sp->wifi_ssid[i] = net_prof.ssid[i];
+        sp->wifi_pass[i] = net_prof.pass[i];
     }
-    u8 sec_buf[512 * DISK_FSN_SECS];
-    for (unsigned i = 0; i < sizeof sec_buf; i++) sec_buf[i] = 0;
+    u8 *sec_buf = disk_sec_buf;
+    for (unsigned i = 0; i < sizeof(disk_sec_buf); i++) sec_buf[i] = 0;
     for (unsigned i = 0; i < sizeof fsn; i++) sec_buf[i] = ((u8 *)fsn)[i];
     if (ata_write_sectors(DISK_FSN_LBA, DISK_FSN_SECS, sec_buf) < 0) return -1;
     if (ata_write_sectors(DISK_DATA_LBA, (u32)(sizeof fsdata / 512), fsdata) < 0) return -1;
-    if (ata_write_sectors(1, 1, &sp) < 0) return -1;
+    if (ata_write_sectors(1, 1, sp) < 0) return -1;
     return 0;
 }
 
 static int disk_load(void) {
     if (!ata_present) return 0;
-    struct disk_super sp;
-    if (ata_read_sectors(1, 1, &sp) < 0) return 0;
-    if (sp.magic != CRAVG_DISK_MAGIC) return 0;
-    u8 sec_buf[512 * DISK_FSN_SECS];
+    struct disk_super *sp = &disk_sp;
+    if (ata_read_sectors(1, 1, sp) < 0) return 0;
+    if (sp->magic != CRAVG_DISK_MAGIC) return 0;
+    u8 *sec_buf = disk_sec_buf;
     int migrated = 0;
-    if (sp.version == 1) {                              /* старый формат: 64 узла по 2048 байт - переносим */
-        if (sp.fsn_bytes != 64 * (u32)sizeof(struct fsnode) || sp.data_bytes != 64 * 2048) return 0;
-        for (unsigned i = 0; i < sizeof sec_buf; i++) sec_buf[i] = 0;
+    if (sp->version == 1) {                              /* старый формат: 64 узла по 2048 байт - переносим */
+        if (sp->fsn_bytes != 64 * (u32)sizeof(struct fsnode) || sp->data_bytes != 64 * 2048) return 0;
+        for (unsigned i = 0; i < sizeof(disk_sec_buf); i++) sec_buf[i] = 0;
         if (ata_read_sectors(2, 3, sec_buf) < 0) return 0;
-        if (calc_checksum(sec_buf, sp.fsn_bytes) != sp.fsn_crc) return 0;
+        if (calc_checksum(sec_buf, sp->fsn_bytes) != sp->fsn_crc) return 0;
         for (int i = 0; i < 64; i++) if (ata_read_sectors(5 + 4u * (u32)i, 4, fsdata[i]) < 0) return 0;
         for (int i = 64; i < FS_MAXN; i++) for (int k = 0; k < FS_FSZ; k++) fsdata[i][k] = 0;
-        for (unsigned i = sp.fsn_bytes; i < sizeof fsn; i++) sec_buf[i] = 0;
+        for (unsigned i = sp->fsn_bytes; i < sizeof fsn; i++) sec_buf[i] = 0;
         migrated = 1;
-    } else if (sp.version == 2) {
-        if (sp.fsn_bytes != sizeof fsn || sp.data_bytes != sizeof fsdata) return 0;
+    } else if (sp->version == 2) {
+        if (sp->fsn_bytes != sizeof fsn || sp->data_bytes != sizeof fsdata) return 0;
         if (ata_read_sectors(DISK_FSN_LBA, DISK_FSN_SECS, sec_buf) < 0) return 0;
-        if (calc_checksum(sec_buf, sizeof fsn) != sp.fsn_crc) return 0;
+        if (calc_checksum(sec_buf, sizeof fsn) != sp->fsn_crc) return 0;
         if (ata_read_sectors(DISK_DATA_LBA, (u32)(sizeof fsdata / 512), fsdata) < 0) return 0;
-        if (calc_checksum(fsdata, sizeof fsdata) != sp.data_crc) return 0;
+        if (calc_checksum(fsdata, sizeof fsdata) != sp->data_crc) return 0;
     } else return 0;
 
     disk_loading = 1;
     for (unsigned i = 0; i < sizeof fsn; i++) ((u8 *)fsn)[i] = sec_buf[i];
     fs_cwd = 0;
-    if (sp.theme_idx < (u32)NTHEMES) theme_apply((int)sp.theme_idx);
-    kbd_ru = sp.kbd_ru ? 1 : 0;
-    setup_done = sp.setup_done ? 1 : 0;
-    if ((sp.username[0] >= 'a' && sp.username[0] <= 'z') || (sp.username[0] >= 'A' && sp.username[0] <= 'Z')) {
+    if (sp->theme_idx < (u32)NTHEMES) theme_apply((int)sp->theme_idx);
+    kbd_ru = sp->kbd_ru ? 1 : 0;
+    setup_done = sp->setup_done ? 1 : 0;
+    if ((sp->username[0] >= 'a' && sp->username[0] <= 'z') || (sp->username[0] >= 'A' && sp->username[0] <= 'Z')) {
         int i = 0;
-        while (i < 23 && sp.username[i]) { cur_user[i] = sp.username[i]; i++; }
+        while (i < 23 && sp->username[i]) { cur_user[i] = sp->username[i]; i++; }
         cur_user[i] = 0;
     }
-    if ((sp.hostname[0] >= 'a' && sp.hostname[0] <= 'z') || (sp.hostname[0] >= 'A' && sp.hostname[0] <= 'Z')) {
+    if ((sp->hostname[0] >= 'a' && sp->hostname[0] <= 'z') || (sp->hostname[0] >= 'A' && sp->hostname[0] <= 'Z')) {
         int i = 0;
-        while (i < 23 && sp.hostname[i]) { cur_host[i] = sp.hostname[i]; i++; }
+        while (i < 23 && sp->hostname[i]) { cur_host[i] = sp->hostname[i]; i++; }
         cur_host[i] = 0;
     }
-    if (sp.wifi_ssid[0]) {
+    if (sp->wifi_ssid[0]) {
         int i = 0;
-        while (i < 31 && sp.wifi_ssid[i]) { net_prof.ssid[i] = sp.wifi_ssid[i]; i++; }
+        while (i < 31 && sp->wifi_ssid[i]) { net_prof.ssid[i] = sp->wifi_ssid[i]; i++; }
         net_prof.ssid[i] = 0;
         i = 0;
-        while (i < 31 && sp.wifi_pass[i]) { net_prof.pass[i] = sp.wifi_pass[i]; i++; }
+        while (i < 31 && sp->wifi_pass[i]) { net_prof.pass[i] = sp->wifi_pass[i]; i++; }
         net_prof.pass[i] = 0;
         net_prof.connected = 1;
     }
@@ -2723,9 +2741,6 @@ static int lua_exec(const char *cmdline, char *buf, int max) {
 #define GX_KBASE(k) (kbase ? kbase : (k))
 #define GX_MOUSE_INIT() do { if (!mouse_tried) { mouse_tried = 1; mouse_init(); } } while (0)
 #define GX_RELEASE_HOOK() (fbc_force = 1)
-extern const u8 romfont[4096];
-extern const u8 fbinfo[32];
-static int fbc_force;
 #include "gfx.h"
 #define LUA_HEAP_ATTR XBSS
 #define LUA_EXT
@@ -3002,6 +3017,9 @@ static void fs_boot(void) {
     fs_init();
     int h = fs_create("/home", 1), d = fs_create("/docs", 1);
     (void)h; (void)d;
+    fs_create("/etc", 1);
+    fs_create("/etc/cravgwm", 1);
+    write_text("/etc/cravgwm/exec-allow", "/apps/cravgterm\n", 0);
     write_text("/readme.txt",
         "Welcome to Cravgos!\nPersistent storage: files and settings are saved automatically.\n"
         "Try: ls, tree, edit notes.txt, ping 10.0.2.2, fastfetch, lua print(6*7), stas install luaide", 0);
@@ -3088,16 +3106,21 @@ void shell_main(void) {
         color = th->user; puts(cur_user); color = old; putc('@');
         color = th->user; puts(cur_host); color = old; putc(':');
         color = th->path; puts(path); color = th->head; puts(" \x10"); color = old; putc(' ');
+        fbc_sync();
         readline(buf, sizeof buf);
         run(buf);
     }
 }
 void kmain(void) {
     idt_init();                                    /* первым делом: исключения больше не убивают машину */
-    ru_init(); vga_font_load(); vga_blink_off();   /* кириллица и 16 цветов фона */
+    pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
+    ru_init();
+    if (!fb_active()) {
+        vga_font_load();
+        vga_blink_off();                           /* кириллица и 16 цветов фона */
+    }
     gfx_boot();                                    /* пиксельный режим, если его включил загрузчик (wmboot) */
     th = &themes[3]; color = th->base;             /* тема amber по умолчанию */
-    pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
     boot_tod = tod();
     rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
     if (!rng) rng = 1;
@@ -3105,6 +3128,55 @@ void kmain(void) {
     ata_init();
     if (!disk_load()) {
         fs_boot();
+        if (ata_present) disk_save();
+    }
+    if (fs_resolve("/etc/cravgwm/exec-allow") < 0) {
+        fs_create("/etc", 1);
+        fs_create("/etc/cravgwm", 1);
+        write_text("/etc/cravgwm/exec-allow", "/apps/cravgterm\n", 0);
+        if (ata_present) disk_save();
+    }
+    if (fs_resolve("/etc/cravgwm/rc.xml") < 0) {
+        fs_create("/etc", 1);
+        fs_create("/etc/cravgwm", 1);
+        write_text("/etc/cravgwm/rc.xml",
+            "<cravgwm>\n"
+            "  <desktops number=\"4\">\n"
+            "    <name>web</name><name>code</name><name>files</name><name>misc</name>\n"
+            "  </desktops>\n"
+            "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+            "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+            "</cravgwm>\n", 0);
+        write_text("/etc/cravgwm/menu.xml",
+            "<openbox_menu>\n"
+            "  <menu id=\"root-menu\" label=\"Cravgos\">\n"
+            "    <item label=\"Terminal\"><action name=\"Execute\"><command>cravgterm</command></action></item>\n"
+            "    <item label=\"Files\"><action name=\"Execute\"><command>cravgfm</command></action></item>\n"
+            "    <item label=\"Launcher\"><action name=\"Execute\"><command>cravgrun</command></action></item>\n"
+            "    <separator/>\n"
+            "    <menu id=\"client-list-menu\"/>\n"
+            "    <separator/>\n"
+            "    <item label=\"Exit\"><action name=\"Exit\"/></item>\n"
+            "  </menu>\n"
+            "</openbox_menu>\n", 0);
+        if (ata_present) disk_save();
+    }
+    if (fs_resolve("/etc/cravgwm/cravgbg.xml") < 0) {
+        write_text("/etc/cravgwm/cravgbg.xml",
+            "<cravgbg mode=\"gradient\" from=\"#0b1d3a\" to=\"#3a6ea5\" direction=\"vertical\"/>\n", 0);
+        if (ata_present) disk_save();
+    }
+    if (fs_resolve("/etc/cravgwm/cravgbar.xml") < 0) {
+        write_text("/etc/cravgwm/cravgbar.xml",
+            "<cravgbar position=\"bottom\" height=\"28\" bg=\"#1e1e2e\" fg=\"#dddddd\" highlight=\"#2a5caa\">\n"
+            "  <items>\n"
+            "    <launcher label=\"Term\" command=\"cravgterm\"/>\n"
+            "    <launcher label=\"Files\" command=\"cravgfm\"/>\n"
+            "    <desktops/>\n"
+            "    <taskbar/>\n"
+            "    <clock format=\"%H:%M\"/>\n"
+            "  </items>\n"
+            "</cravgbar>\n", 0);
         if (ata_present) disk_save();
     }
     nic_tx = e1000_send; nic_rx = e1000_recv; ms_now = now_ms;
@@ -3125,6 +3197,8 @@ void kmain(void) {
         puts("storage: RAMFS only (no ATA hard disk detected)\n");
     }
     putc('\n');
+    fbc_force = 1;
+    fbc_sync();
     if (!setup_done) {
         puts("First run: press 's' for Setup Wizard, or Enter to continue (3s)... ");
         int start_setup = 0;

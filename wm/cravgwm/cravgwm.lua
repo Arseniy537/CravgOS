@@ -1,4 +1,5 @@
 --lua
+--needs cravgbar cravgbg cravgrun cravgterm cravgfm cwm-doc
 -- cravgwm - floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
 if CWM then return CWM end
 local W = {}

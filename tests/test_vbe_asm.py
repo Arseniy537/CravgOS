@@ -121,6 +121,7 @@ class Bios:
             for i in range(4096): c.mem[0xC0000 + 0x1000 + i] = (i * 7 + 3) & 0xFF
             return
         if ax == 0x4F00:
+            assert es == 0, 'ES must be 0 for int 10h ax=4F00'
             di = es * 16 + c.getreg('di')
             assert bytes(c.mem[di:di + 4]) == b'VBE2'
             if not self.ctrl_ok: c.setreg('ax', 0x014F); return
@@ -128,8 +129,10 @@ class Bios:
             lst = 0xC0000 + 0x2000
             for i, md in enumerate(self.modes): c.w16(lst + 2 * i, md[0])
             c.w16(lst + 2 * len(self.modes), 0xFFFF)
+            c.seg['es'] = 0xC000
             c.setreg('ax', 0x004F); return
         if ax == 0x4F01:
+            assert es == 0, 'ES must be 0 for int 10h ax=4F01'
             di = es * 16 + c.getreg('di'); mode = c.getreg('cx')
             hit = [md for md in self.modes if md[0] == mode]
             if not hit: c.setreg('ax', 0x014F); return
@@ -139,9 +142,11 @@ class Bios:
             c.mem[di + 0x19] = bpp; c.mem[di + 0x1B] = model
             c.mem[di + 0x20] = 16; c.mem[di + 0x22] = 8; c.mem[di + 0x24] = 0
             c.w32(di + 0x28, 0xE0000000 + n)
+            c.seg['es'] = 0xC000
             c.setreg('ax', 0x004F); return
         if ax == 0x4F02:
             self.set_calls.append(c.getreg('bx'))
+            c.seg['es'] = 0xC000
             c.setreg('ax', 0x004F if self.setmode_ok else 0x014F); return
         raise RuntimeError('unexpected int 10h ax=%04x' % ax)
 
@@ -169,6 +174,10 @@ check(cpu.seg['ds'] == 0 and cpu.seg['es'] == 0 and cpu.r['sp'] == 0x7C00 and no
 bios = Bios([(0x112, 640, 480, 32, 6, 0x9B), (0x115, 800, 600, 32, 6, 0x9B)])
 cpu, fb = run(bios)
 check(fb['magic'] == 0x31494246 and (fb['w'], fb['h']) == (800, 600) and bios.set_calls == [0x4115], 'fallback to 800x600: %s %s' % (fb, bios.set_calls))
+# 2b. нет 1024x768 и 800x600 - берём 640x480
+bios = Bios([(0x112, 640, 480, 32, 6, 0x9B)])
+cpu, fb = run(bios)
+check(fb['magic'] == 0x31494246 and (fb['w'], fb['h']) == (640, 480) and bios.set_calls == [0x4112], 'fallback to 640x480: %s %s' % (fb, bios.set_calls))
 # 3. нет подходящих режимов (8 бит, не линейный буфер, неверная модель)
 bios = Bios([(0x105, 1024, 768, 8, 4, 0x9B), (0x118, 1024, 768, 32, 6, 0x1B), (0x119, 1024, 768, 32, 4, 0x9B), (0x11A, 1024, 768, 32, 6, 0x00)])
 cpu, fb = run(bios)

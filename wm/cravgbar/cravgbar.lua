@@ -5,12 +5,22 @@ local M = {single = true}
 function M.new(W, args)
   local UI, U = W.ui, W.u
   local root = UI.config("cravgbar")
-  if not root then return nil end
-  local a = root.a
+  local a = (root and root.a) or {position = "bottom", height = "28", bg = "0x1e1e2e", fg = "0xdddddd", highlight = "0x2a5caa"}
   local h = U.num(a.height, 28)
   local c = {title = "cravgbar", kind = "dock", edge = a.position == "top" and "top" or "bottom", size = h, class = "cravgbar", w = W.sw, h = h,
     bg = U.color(a.bg, 0x1e1e2e), fg = U.color(a.fg, 0xdddddd), hl = U.color(a.highlight, 0x2a5caa), sc = U.num(a.scale, 1), items = {}, sig = "", hit = {}}
-  for _, n in ipairs(root:child("items") and root:child("items").k or {}) do c.items[#c.items + 1] = n end
+  local items_node = root and root:child("items")
+  if items_node then
+    for _, n in ipairs(items_node.k or {}) do c.items[#c.items + 1] = n end
+  else
+    c.items = {
+      {tag = "launcher", a = {label = "Term", command = "cravgterm"}},
+      {tag = "launcher", a = {label = "Files", command = "cravgfm"}},
+      {tag = "desktops", a = {}},
+      {tag = "taskbar", a = {}},
+      {tag = "clock", a = {format = "%H:%M"}}
+    }
+  end
   local function text(self, i, t, x, w) gfx.text(x + 6, (h - 16 * self.sc) // 2, U.fit(t, w - 12, self.sc), self.fg, self.sc) end
   function c:layout()                                   -- вычислить вид и области нажатия
     local x, r, hits, draw = 4, W.sw - 4, {}, {}

@@ -542,6 +542,7 @@ static void stas_list(void) {
     else puts("[x] = installed.   stas install NAME\n");
 }
 static void stas_info(const char *name) {
+    if (streq(name, "wm")) name = "cravgwm";
     struct stas_ent e; int f = stas_find(name, &e);
     if (f < 0) return;
     if (!f) { puts("stas: no such package: "); puts(name); putc('\n'); return; }
@@ -623,6 +624,7 @@ static void stas_install_bundle(const char *name, const struct stas_ent *e, cons
     stas_install_needs(name);
 }
 static void stas_install(const char *name) {
+    if (streq(name, "wm")) name = "cravgwm";
     if (!stas_okname(name)) { puts("stas: bad package name (a-z 0-9 - _ , up to 15 characters)\n"); return; }
     struct stas_ent e; int f = stas_find(name, &e);
     if (f < 0) return;
@@ -671,6 +673,7 @@ static void stas_install(const char *name) {
     stas_install_needs(name);
 }
 static void stas_remove(const char *name) {
+    if (streq(name, "wm")) name = "cravgwm";
     if (!stas_okname(name)) { puts("stas: bad package name\n"); return; }
     int i = stas_node(name);
     if (i < 0) { puts("stas: not installed: "); puts(name); putc('\n'); return; }

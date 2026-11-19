@@ -4,6 +4,77 @@
 .section .boot, "ax"
 .global _start16
 _start16:
+    .byte 0xeb, 0x05
+boot_lba:     .word 23
+boot_sectors: .word 160
+boot_drive:   .byte 0
+
+loader_init:
+    cli
+    ljmp $0, $1f
+1:
+    xorw %ax, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+    movw $0x7C00, %sp
+    sti
+
+    movb %dl, (boot_drive)
+
+    # Релоцируем загрузчик первой стадии в 0x0600
+    movw $0x7C00, %si
+    movw $0x0600, %di
+    movw $256, %cx
+    cld
+    rep movsw
+
+    # Дальний переход на исполнение из 0x0600
+    ljmp $0, $(0x0600 + (relocated - _start16))
+
+relocated:
+    # Загружаем все 2048-байтные сектора cravgos.img с CD в 0x7C00..
+    movw (0x0600 + (boot_lba - _start16)), %ax
+    movw %ax, (0x0600 + (dap_lba - _start16))
+    movw $0x07C0, (0x0600 + (dap_seg - _start16))
+    movw (0x0600 + (boot_sectors - _start16)), %cx
+
+load_loop:
+    pushw %cx
+    movb  $0x42, %ah
+    movb  (0x0600 + (boot_drive - _start16)), %dl
+    movw  $(0x0600 + (dap - _start16)), %si
+    int   $0x13
+    jc    load_fail
+    addw  $0x80, (0x0600 + (dap_seg - _start16))
+    incw  (0x0600 + (dap_lba - _start16))
+    popw  %cx
+    loop  load_loop
+
+    # Все сектора загружены по адресу 0x7C00+ без переполнений BIOS
+    ljmp $0, $stage2_start
+
+load_fail:
+    movw $0xB800, %ax
+    movw %ax, %es
+    movw $0x4F45, %es:0    # 'E'
+    movw $0x4F52, %es:2    # 'R'
+    movw $0x4F52, %es:4    # 'R'
+1:  hlt
+    jmp 1b
+
+.align 4
+dap:
+    .byte 0x10          # размер структуры DAP (16 байт)
+    .byte 0             # зарезервировано (0)
+    .word 1             # читать по 1 сектору (2048 байт)
+    .word 0             # смещение буфера (всегда 0)
+dap_seg:
+    .word 0x07C0        # сегмент буфера (начиная с 0x07C0 = 0x7C00)
+dap_lba:
+    .quad 23            # 64-битный начальный LBA
+
+stage2_start:
     movw $0x0003, %ax        # текстовый режим 80x25
     int  $0x10
 
@@ -28,12 +99,12 @@ _start16:
     int   $0x10
     popw  %es
 
-    cli
     xorw %ax, %ax
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
     movw $0x7C00, %sp
+    sti
 
     # Пиксельный режим по запросу: одноразовый флаг в CMOS (регистр 0x7D = 'W'), его ставит команда wmboot.
     # Флаг сбрасывается ДО попытки: если что-то пойдёт не так, следующая загрузка снова текстовая.
@@ -48,6 +119,7 @@ _start16:
     outb %al, $0x71
     call vbe_setup
 1:
+    cli
 
     # Включаем A20 (Fast A20 Gate)
     inb  $0x92, %al
@@ -81,6 +153,8 @@ vbe_setup:
     cld
     rep movsw
     popw  %ds
+    xorw  %ax, %ax
+    movw  %ax, %es
     movw  $vbe_buf, %di             # информация о контроллере
     movl  $0x32454256, (%di)        # "VBE2"
     movw  $0x4F00, %ax
@@ -114,6 +188,8 @@ vbe_scan:
     addw  $2, %si
     movw  %si, vbe_si
     movw  %cx, vbe_mode
+    xorw  %ax, %ax
+    movw  %ax, %es
     movw  $vbe_mi, %di
     movw  $0x4F01, %ax
     int   $0x10
@@ -162,6 +238,8 @@ vbe_found:
     je    vbe_out
     movl  $0, fbinfo                # режим не включился: остаёмся в тексте
 vbe_out:
+    xorw  %ax, %ax
+    movw  %ax, %es
     popw  %fs
     popal
     ret
@@ -295,6 +373,7 @@ long_entry:
     movw %ax, %gs
     movw %ax, %ss
     movq $0x800000, %rsp
+    subq $40, %rsp
     cld
 
     # Включаем FPU и SSE (CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1)

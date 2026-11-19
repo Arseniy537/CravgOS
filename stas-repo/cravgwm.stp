@@ -1,6 +1,7 @@
 --stas-bundle
-@@ cravgwm 3068
+@@ cravgwm 3128
 --lua
+--needs cravgbar cravgbg cravgrun cravgterm cravgfm cwm-doc
 --members cwm-act cwm-comp cwm-conf cwm-deco cwm-input cwm-menu cwm-paint cwm-ui cwm-util cwm-win cwm-wops cwm-xml cwm-xmlf
 -- cravgwm - floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
 if CWM then return CWM end
@@ -272,7 +273,7 @@ return function(W)
   function C.tick(dt) if W.focus ~= C.lastfocus then C.lastfocus = W.focus for _, w in ipairs(W.wins) do if w.cp then W.dmg(w) end end end end
 end
 
-@@ cwm-conf 5535
+@@ cwm-conf 7586
 --lua
 -- cwm-conf - reads /etc/cravgwm/rc.xml (module of cravgwm)
 return function(W)
@@ -314,6 +315,41 @@ return function(W)
     return r
   end
   C.acts = acts
+  local function add_k(cfg, spec, acts_list)
+    local k = C.key(spec)
+    if k then k.acts = acts_list cfg.keys[#cfg.keys + 1] = k end
+  end
+  local function def_keys(cfg)
+    for _, b in ipairs({
+      {"A-F4", "Close"}, {"W-Return", "Execute", "cravgterm"}, {"W-t", "Execute", "cravgterm"},
+      {"W-d", "Execute", "cravgrun"}, {"W-r", "Execute", "cravgrun"}, {"W-e", "Execute", "cravgfm"},
+      {"A-Tab", "NextWindow"}, {"C-A-BackSpace", "Exit"}, {"W-m", "ToggleMaximize"}
+    }) do add_k(cfg, b[1], {{name = b[2], a = b[3] and {command = b[3]} or {}}}) end
+    for i = 1, 4 do
+      add_k(cfg, "W-" .. i, {{name = "GoToDesktop", a = {to = tostring(i)}}})
+      add_k(cfg, "W-S-" .. i, {{name = "SendToDesktop", a = {to = tostring(i)}}})
+    end
+  end
+  local function def_mouse()
+    local function a(n) return {{name = n, a = {}}} end
+    return {
+      Titlebar = {{m = 0, b = 1, how = "Drag", acts = a("Move")}, {m = 0, b = 1, how = "DoubleClick", acts = a("ToggleMaximize")}},
+      Close = {{m = 0, b = 1, how = "Click", acts = a("Close")}},
+      Maximize = {{m = 0, b = 1, how = "Click", acts = a("ToggleMaximize")}},
+      Iconify = {{m = 0, b = 1, how = "Click", acts = a("Iconify")}},
+      Frame = {{m = 4, b = 1, how = "Drag", acts = a("Move")}, {m = 4, b = 2, how = "Drag", acts = a("Resize")}},
+      BRCorner = {{m = 0, b = 1, how = "Drag", acts = a("Resize")}},
+      Root = {{m = 0, b = 2, how = "Press", acts = {{name = "ShowMenu", a = {menu = "root-menu"}}}}}
+    }
+  end
+  local function apply_defaults(cfg)
+    cfg.desktops = 4
+    cfg.dnames = {"web", "code", "files", "misc"}
+    if fs.exists("/apps/cravgbg") then cfg.autostart[#cfg.autostart + 1] = "cravgbg" end
+    if fs.exists("/apps/cravgbar") then cfg.autostart[#cfg.autostart + 1] = "cravgbar" end
+    def_keys(cfg)
+    cfg.mouse = def_mouse()
+  end
   local function defaults()
     return {desktops = 1, dnames = {}, focus = {model = "click", raise = true}, place = "center", keys = {}, mouse = {}, rules = {},
       autostart = {}, menu = C.path .. "menu.xml", wheel = 1,
@@ -325,8 +361,15 @@ return function(W)
   function C.load()
     local cfg = defaults()
     W.cfg = cfg
+    if not fs.exists(C.path .. "rc.xml") then
+      apply_defaults(cfg)
+      return cfg
+    end
     local root, err = X.load(C.path .. "rc.xml")
-    if not root then W.log("rc.xml: " .. err) return cfg end
+    if not root then
+      apply_defaults(cfg)
+      return cfg
+    end
     local th = cfg.theme
     for _, n in ipairs(root.k) do
       local t, a = n.tag, n.a
@@ -379,6 +422,8 @@ return function(W)
         end
       end
     end
+    if #cfg.keys == 0 then def_keys(cfg) end
+    if not next(cfg.mouse) then cfg.mouse = def_mouse() end
     return cfg
   end
 end
@@ -566,7 +611,7 @@ return function(W)
   end
 end
 
-@@ cwm-menu 5452
+@@ cwm-menu 6237
 --lua
 -- cwm-menu - Openbox-style menus from /etc/cravgwm/menu.xml (module of cravgwm)
 return function(W)
@@ -596,7 +641,22 @@ return function(W)
         {label = "Always on top", fn = a("ToggleAlwaysOnTop")}, {label = "All desktops", fn = a("ToggleOmnipresent")}, {sep = true}, {label = "Close", fn = a("Close")}}
     end
     local node = defs[id]
-    if not node then l[1] = {label = "(no menu " .. id .. ")"} return l end
+    if not node then
+      if id == "root-menu" then
+        local function act(n, cmd) return {{name = n, a = cmd and {command = cmd} or {}}} end
+        local it = {}
+        if fs.exists("/apps/cravgterm") then it[#it + 1] = {label = "Terminal", acts = act("Execute", "cravgterm")} end
+        if fs.exists("/apps/cravgfm") then it[#it + 1] = {label = "Files", acts = act("Execute", "cravgfm")} end
+        if fs.exists("/apps/cravgrun") then it[#it + 1] = {label = "Launcher", acts = act("Execute", "cravgrun")} end
+        if #it > 0 then it[#it + 1] = {sep = true} end
+        it[#it + 1] = {label = "Windows  >", sub = "client-list-menu"}
+        it[#it + 1] = {sep = true}
+        it[#it + 1] = {label = "Exit", acts = act("Exit")}
+        return it
+      end
+      l[1] = {label = "(no menu " .. id .. ")"}
+      return l
+    end
     for _, c in ipairs(node.k) do
       if c.tag == "item" then l[#l + 1] = {label = c.a.label or "?", acts = W.conf.acts(c)}
       elseif c.tag == "separator" then l[#l + 1] = {sep = true}
@@ -637,8 +697,10 @@ return function(W)
   function M.show(id, ctx)
     if not defs then
       defs = {}
-      local root, err = W.xml.load(W.cfg.menu)
-      if root then scan(root) else W.log("menu: " .. err) end
+      if fs.exists(W.cfg.menu) then
+        local root, err = W.xml.load(W.cfg.menu)
+        if root then scan(root) end
+      end
     end
     if M.obj then close() end
     local o = {lv = {}, ctx = {w = ctx.w, ev = ctx.ev}}
@@ -777,7 +839,7 @@ return function(W)
   end
 end
 
-@@ cwm-ui 1769
+@@ cwm-ui 1824
 --lua
 -- cwm-ui - helpers for programs: line editor, config loading (module of cravgwm)
 return function(W)
@@ -804,10 +866,10 @@ return function(W)
     gfx.text(x, y, e.t:sub(from + 1, from + cols), fg, scale)
     if (os.ms() // 500) % 2 == 0 then gfx.fill(x + (e.p - from) * 8 * scale, y + 14 * scale, 8 * scale, 2 * scale, fg) end
   end
-  -- loads /etc/cravgwm/<name>.xml; on error writes to the WM log
+  -- loads /etc/cravgwm/<name>.xml; on parse error writes to the WM log
   function UI.config(name)
     local root, err = W.xml.load("/etc/cravgwm/" .. name .. ".xml")
-    if not root then W.log(name .. ": " .. err) end
+    if not root and err and not err:find("cannot read", 1, true) then W.log(name .. ": " .. err) end
     return root
   end
   function UI.color(s, d) return W.u.color(s, d) end

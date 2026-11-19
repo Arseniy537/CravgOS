@@ -24,10 +24,10 @@ return function(W)
     gfx.text(x, y, e.t:sub(from + 1, from + cols), fg, scale)
     if (os.ms() // 500) % 2 == 0 then gfx.fill(x + (e.p - from) * 8 * scale, y + 14 * scale, 8 * scale, 2 * scale, fg) end
   end
-  -- loads /etc/cravgwm/<name>.xml; on error writes to the WM log
+  -- loads /etc/cravgwm/<name>.xml; on parse error writes to the WM log
   function UI.config(name)
     local root, err = W.xml.load("/etc/cravgwm/" .. name .. ".xml")
-    if not root then W.log(name .. ": " .. err) end
+    if not root and err and not err:find("cannot read", 1, true) then W.log(name .. ": " .. err) end
     return root
   end
   function UI.color(s, d) return W.u.color(s, d) end

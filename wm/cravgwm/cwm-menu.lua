@@ -27,7 +27,22 @@ return function(W)
         {label = "Always on top", fn = a("ToggleAlwaysOnTop")}, {label = "All desktops", fn = a("ToggleOmnipresent")}, {sep = true}, {label = "Close", fn = a("Close")}}
     end
     local node = defs[id]
-    if not node then l[1] = {label = "(no menu " .. id .. ")"} return l end
+    if not node then
+      if id == "root-menu" then
+        local function act(n, cmd) return {{name = n, a = cmd and {command = cmd} or {}}} end
+        local it = {}
+        if fs.exists("/apps/cravgterm") then it[#it + 1] = {label = "Terminal", acts = act("Execute", "cravgterm")} end
+        if fs.exists("/apps/cravgfm") then it[#it + 1] = {label = "Files", acts = act("Execute", "cravgfm")} end
+        if fs.exists("/apps/cravgrun") then it[#it + 1] = {label = "Launcher", acts = act("Execute", "cravgrun")} end
+        if #it > 0 then it[#it + 1] = {sep = true} end
+        it[#it + 1] = {label = "Windows  >", sub = "client-list-menu"}
+        it[#it + 1] = {sep = true}
+        it[#it + 1] = {label = "Exit", acts = act("Exit")}
+        return it
+      end
+      l[1] = {label = "(no menu " .. id .. ")"}
+      return l
+    end
     for _, c in ipairs(node.k) do
       if c.tag == "item" then l[#l + 1] = {label = c.a.label or "?", acts = W.conf.acts(c)}
       elseif c.tag == "separator" then l[#l + 1] = {sep = true}
@@ -68,8 +83,10 @@ return function(W)
   function M.show(id, ctx)
     if not defs then
       defs = {}
-      local root, err = W.xml.load(W.cfg.menu)
-      if root then scan(root) else W.log("menu: " .. err) end
+      if fs.exists(W.cfg.menu) then
+        local root, err = W.xml.load(W.cfg.menu)
+        if root then scan(root) end
+      end
     end
     if M.obj then close() end
     local o = {lv = {}, ctx = {w = ctx.w, ev = ctx.ev}}

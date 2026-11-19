@@ -3,7 +3,7 @@
 -- cwm-doc - reference for the cravgwm configuration files (run in the text console: cwm-doc)
 local P = {[[
 CRAVGWM - configuration reference (page 1/3)
-There are no default configuration files. Create /etc/cravgwm/ and write the XML yourself:
+Built-in defaults are used if /etc/cravgwm/rc.xml is missing. To customize:
   mkdir /etc ; mkdir /etc/cravgwm ; edit /etc/cravgwm/rc.xml
 Files: rc.xml  menu.xml  cravgcomp.xml  cravgbar.xml  cravgbg.xml  cravgrun.xml  cravgterm.xml  cravgfm.xml  exec-allow
 Any file may contain <include href="/etc/cravgwm/other.xml"/>. Files are limited to 8192 bytes.

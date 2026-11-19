@@ -87,7 +87,7 @@ def main():
         print("usage: mkiso.py cravgos.img cravgos.iso [bootx64.efi]")
         sys.exit(1)
 
-    img = open(sys.argv[1], 'rb').read()
+    img = bytearray(open(sys.argv[1], 'rb').read())
     out = sys.argv[2]
     efi_path = sys.argv[3] if len(sys.argv) > 3 else ('bootx64.efi' if os.path.exists('bootx64.efi') else None)
 
@@ -111,6 +111,8 @@ def main():
 
     IMG_SEC = 23
     img_sectors = -(-len(img) // SEC)
+    # Записываем LBA и число 2048-байтных секторов в заголовок первой стадии загрузчика
+    struct.pack_into('<HH', img, 2, IMG_SEC, img_sectors)
 
     efi_sectors = 0
     EFI_SEC = IMG_SEC + img_sectors
@@ -157,9 +159,9 @@ def main():
     s = sum(struct.unpack('<16H', bytes(v))) & 0xFFFF
     v[28:30] = struct.pack('<H', (-s) & 0xFFFF)
 
-    # 2. Initial / Default Entry (BIOS boot image)
+    # 2. Initial / Default Entry (BIOS boot image): загружает 4 сектора (2048 байт = 1 сектор CD)
     e = bytearray(32); e[0] = 0x88; e[1] = 0
-    e[6:8] = struct.pack('<H', -(-len(img) // 512)); e[8:12] = struct.pack('<I', IMG_SEC)
+    e[6:8] = struct.pack('<H', 4); e[8:12] = struct.pack('<I', IMG_SEC)
 
     cat[0:32] = v; cat[32:64] = e
 

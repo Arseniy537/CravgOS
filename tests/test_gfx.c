@@ -12,6 +12,8 @@ static void puthex(u32 n, int w) { (void)n; (void)w; }
 static void outb(u16 p, u8 v) { (void)p; (void)v; }
 static void reboot(void) {}
 static int stas_try_app(const char *c) { (void)c; return 0; }
+static void stas_install(const char *name) { (void)name; }
+static void stas_update(void) {}
 #include "../fbcon.h"
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n  out=[%s]\n", __LINE__, #c, out); fails++; } } while (0)

@@ -5,8 +5,7 @@ local M = {single = true}
 function M.new(W, args)
   local U = W.u
   local root = W.ui.config("cravgbg")
-  if not root then return nil end
-  local a = root.a
+  local a = (root and root.a) or {mode = "gradient", color = "0x0B1D3A", to = "0x3A6EA5", direction = "vertical"}
   local c = {title = "cravgbg", kind = "desktop", class = "cravgbg", w = W.sw, h = W.sh, mode = a.mode or "solid"}
   local img
   if c.mode == "image" or c.mode == "tile" then

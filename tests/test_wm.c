@@ -178,6 +178,21 @@ int main(int argc, char **argv) {
     run_at("cravgwm");
     CHECK(!strstr(out, "lua: "));
     CHECK(ap_checks == 6);
+
+    /* ---- встроенная конфигурация по умолчанию (без файлов в /etc/cravgwm/) ---- */
+    int rci = fs_resolve("/etc/cravgwm/rc.xml"); if (rci >= 0) fs_remove(rci);
+    int mni = fs_resolve("/etc/cravgwm/menu.xml"); if (mni >= 0) fs_remove(mni);
+    sc_reset(); shot_nn = 0;
+    sW(30);
+    sK(10, 8); sW(3);                          /* Super+Return: терминал */
+    sK('e', 8); sW(3);                           /* Super+E: cravgfm */
+    sK('d', 8); sW(3); sK(27, 0); sW(2);        /* Super+D: лаунчер, Esc: закрыть */
+    sK(0x113, 4); sW(2);                        /* Alt+F4: закрыть активное окно */
+    sK(8, 6); sW(2);                            /* Ctrl+Alt+Backspace: выход */
+    run_at("cravgwm");
+    CHECK(!strstr(out, "lua: ") && !strstr(out, "error"));
+    CHECK(log_px() == 0);
+
     if (fails) { printf("test_wm: %d FAILED\n", fails); return 1; }
     printf("test_wm: OK\n");
     return 0;
