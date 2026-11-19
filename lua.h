@@ -14,7 +14,7 @@
 #ifndef LUA_H
 #define LUA_H
 #ifndef LUA_HEAP_SIZE
-#define LUA_HEAP_SIZE (1024 * 1024)
+#define LUA_HEAP_SIZE (2560 * 1024)
 #endif
 #ifndef LUA_HEAP_ATTR
 #define LUA_HEAP_ATTR
@@ -96,8 +96,7 @@ enum { GK_FREE, GK_STR, GK_VALS, GK_TAB, GK_CLO, GK_BOX, GK_AST };
 #define GC_NIL 0xFFFFFFFFu
 static u8 lua_heap[LUA_HEAP_SIZE] LUA_HEAP_ATTR __attribute__((aligned(16)));
 static u32 gc_bm[LUA_HEAP_SIZE / 16 / 32 + 1] LUA_HEAP_ATTR;  /* бит на начало каждого блока */
-static u32 gc_ms[2048] LUA_HEAP_ATTR;
-static u32 lua_top, gc_free, gc_msn, gc_ovf;
+static u32 lua_top, gc_free, gc_ms[2048], gc_msn, gc_ovf;
 static u32 gc_count;                                          /* число сборок (для тестов) */
 static void *lgalloc(u32 n, u8 kind);
 static void *lperm(u32 n) { return lgalloc(n, GK_AST); }      /* объекты разбора: AST, прототипы, переменные */
@@ -127,13 +126,13 @@ static void gc_markv(struct lval v) {
     }
 }
 static void gc_markw(u64 w) {                                   /* слово со стека: может быть указателем внутрь объекта */
-    if (w < (u64)(unsigned long long)lua_heap || w >= (u64)(unsigned long long)(lua_heap + lua_top)) return;
-    u32 idx = (u32)((w - (u64)(unsigned long long)lua_heap) >> 4);
+    if (w < (u64)(unsigned long)lua_heap || w >= (u64)(unsigned long)(lua_heap + lua_top)) return;
+    u32 idx = (u32)((w - (u64)(unsigned long)lua_heap) >> 4);
     while (idx > 0 && !gc_bmget(idx)) idx--;
     u32 off = idx << 4;
     struct gch *h = gc_h(off);
     if (h->kind == GK_FREE || (h->flags & 1) || h->size < 16 || off + h->size > lua_top) return;
-    if (w >= (u64)(unsigned long long)lua_heap + off + h->size) return;
+    if (w >= (u64)(unsigned long)lua_heap + off + h->size) return;
     h->flags |= 1; gc_push(off);
 }
 static void gc_scan_block(u32 off) {
@@ -368,7 +367,8 @@ static void lsetfield(struct ltab *t, const char *name, struct lval v) { lrawset
 /* ---------- Лексер ---------- */
 static const char *PCHUNK;
 static void pfail(const char *m);
-enum { TK_EOF = 256, TK_NAME, TK_STR, TK_NUM, TK_EQ, TK_NE, TK_LE, TK_GE, TK_IDIV, TK_CAT, TK_DOTS,
+enum { TK_EOF = 256, TK_NAME, TK_STR, TK_NUM, TK_EQ, TK_NE, TK_LE, TK_GE, TK_IDIV, TK_CAT, TK_DOTS, TK_SHL, TK_SHR,
+      /* ключевые слова идут подряд, TK_AND - первое */
        TK_AND, TK_BREAK, TK_DO, TK_ELSE, TK_ELSEIF, TK_END, TK_FALSE, TK_FOR, TK_FUNCTION, TK_IF, TK_IN,
        TK_LOCAL, TK_NIL, TK_NOT, TK_OR, TK_REPEAT, TK_RETURN, TK_THEN, TK_TRUE, TK_UNTIL, TK_WHILE };
 static const char *const lua_kw[] = { "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
@@ -454,6 +454,8 @@ static void lx_next(void) {
     if (c == '~' && n1 == '=') { LX.p++; LX.t = TK_NE; return; }
     if (c == '<' && n1 == '=') { LX.p++; LX.t = TK_LE; return; }
     if (c == '>' && n1 == '=') { LX.p++; LX.t = TK_GE; return; }
+    if (c == '<' && n1 == '<') { LX.p++; LX.t = TK_SHL; return; }
+    if (c == '>' && n1 == '>') { LX.p++; LX.t = TK_SHR; return; }
     if (c == '/' && n1 == '/') { LX.p++; LX.t = TK_IDIV; return; }
     if (c == '.' && n1 == '.') { LX.p++; if (LX.p < LX.end && *LX.p == '.') { LX.p++; LX.t = TK_DOTS; } else LX.t = TK_CAT; return; }
     LX.t = c;
@@ -465,13 +467,13 @@ static int lx_peek(void) {
 
 /* ---------- Разбор ---------- */
 enum { N_NIL, N_TRUE, N_FALSE, N_INT, N_STR, N_LOCAL, N_UP, N_GLOBAL, N_INDEX, N_CALL, N_METHOD, N_FUNC, N_BIN, N_NOT, N_NEG, N_LEN,
-       N_AND, N_OR, N_TABLE, N_PAREN,
+       N_AND, N_OR, N_TABLE, N_PAREN, N_BNOT,
        S_LOCAL, S_ASSIGN, S_CALL, S_DO, S_WHILE, S_REPEAT, S_IF, S_FORN, S_FORIN, S_RETURN, S_BREAK, S_LFUNC };
 struct fstate { struct fstate *up; struct fproto *fp; struct lvar *act[LUA_MAXACT]; int nact, nslots; };
 static struct fstate *FS;
 static int pdepth;
 static void gc_mark_extra(void) {
-    gc_markw((u64)(unsigned long long)LX.p); gc_markp(LX.s); gc_markw((u64)(unsigned long long)PCHUNK); gc_markp(FS); gc_markw((u64)(unsigned long long)L.chunk);
+    gc_markw((u64)(unsigned long)LX.p); gc_markp(LX.s); gc_markw((u64)(unsigned long)PCHUNK); gc_markp(FS); gc_markw((u64)(unsigned long)L.chunk);
 }
 
 static struct nd *nnew(int k) {
@@ -581,6 +583,10 @@ static int bprio(int t, int *rp) {                        /* приоритет 
         case TK_OR: *rp = 1; return 1;
         case TK_AND: *rp = 2; return 2;
         case '<': case '>': case TK_LE: case TK_GE: case TK_NE: case TK_EQ: *rp = 3; return 3;
+        case '|': *rp = 4; return 4;
+        case '~': *rp = 5; return 5;
+        case '&': *rp = 6; return 6;
+        case TK_SHL: case TK_SHR: *rp = 7; return 7;
         case TK_CAT: *rp = 8; return 9;
         case '+': case '-': *rp = 10; return 10;
         case '*': case '/': case '%': case TK_IDIV: *rp = 11; return 11;
@@ -591,10 +597,10 @@ static int bprio(int t, int *rp) {                        /* приоритет 
 static struct nd *pexpr(int limit) {
     if (++pdepth > LUA_PDEPTH) { pfail("expression is too complex"); pdepth--; return nnew(N_NIL); }
     struct nd *l;
-    if (LX.t == TK_NOT || LX.t == '-' || LX.t == '#') {
+    if (LX.t == TK_NOT || LX.t == '-' || LX.t == '#' || LX.t == '~') {
         int t = LX.t; lx_next();
         struct nd *o = pexpr(12);
-        l = nnew(t == TK_NOT ? N_NOT : t == '-' ? N_NEG : N_LEN); l->a = o;
+        l = nnew(t == TK_NOT ? N_NOT : t == '-' ? N_NEG : t == '~' ? N_BNOT : N_LEN); l->a = o;
     } else l = psimple();
     int rp = 0, p;
     while (!L.err && (p = bprio(LX.t, &rp)) > limit) {
@@ -864,6 +870,15 @@ static struct lval larith(int op, struct lval a, struct lval b) {
             lint r = x % y; if (r != 0 && ((r < 0) != (y < 0))) r += y;
             return lint_v(r);
         }
+        case '&': return lint_v((lint)(ux & uy));
+        case '|': return lint_v((lint)(ux | uy));
+        case '~': return lint_v((lint)(ux ^ uy));
+        case 200 + (TK_SHL - 256): case 200 + (TK_SHR - 256): {
+            int left = (op == 200 + (TK_SHL - 256)) == (y >= 0);
+            unsigned long long sh = y >= 0 ? (unsigned long long)y : 0ull - (unsigned long long)y;
+            if (sh >= 64) return lint_v(0);
+            return lint_v((lint)(left ? ux << sh : ux >> sh));
+        }
         case '^': {
             if (y < 0) return lint_v(0);
             unsigned long long r = 1, bs = ux;
@@ -941,6 +956,12 @@ static struct lval lev(struct nd *n, struct frame *f) {
             if (L.err) return LNIL;
             if (!lnum(a, &x)) { lerr3("attempt to perform arithmetic on a ", ltname(a), " value"); return LNIL; }
             return lint_v((lint)(0ull - (unsigned long long)x));
+        }
+        case N_BNOT: {
+            struct lval a = lev(n->a, f); lint x;
+            if (L.err) return LNIL;
+            if (!lnum(a, &x)) { lerr3("attempt to perform bitwise operation on a ", ltname(a), " value"); return LNIL; }
+            return lint_v(~x);
         }
         case N_LEN: {
             struct lval a = lev(n->a, f);
@@ -1183,8 +1204,20 @@ static const struct lreg { const char *lib, *name; u8 id; } lua_reg[] = {
     {"fs","exists",C_FS_EXISTS},{"fs","isdir",C_FS_ISDIR},{"fs","mkdir",C_FS_MKDIR},
 };
 #define LUA_NREG ((int)(sizeof lua_reg / sizeof lua_reg[0]))
+#define C_EXT 128
+static struct { const char *name; u8 id; } lua_xreg[128];
+static int lua_nx;
+#ifdef LUA_EXT
+static int lua_ext(int id, struct lval *a, int n);          /* функции расширения (gfx.h): id >= C_EXT */
+static void lua_ext_init(void);
+static void lua_ext_done(void);
+#endif
 static int lua_curid;
-static const char *lcname(int id) { for (int i = 0; i < LUA_NREG; i++) if (lua_reg[i].id == id) return lua_reg[i].name; return "?"; }
+static const char *lcname(int id) {
+    for (int i = 0; i < LUA_NREG; i++) if (lua_reg[i].id == id) return lua_reg[i].name;
+    for (int i = 0; i < lua_nx; i++) if (lua_xreg[i].id == id) return lua_xreg[i].name;
+    return "?";
+}
 static void largerr(int i, const char *what) {
     char nb[8]; nb[0] = (char)('0' + i + 1); nb[1] = 0;
     lerr3("bad argument #", nb, " to '"); if (L.err) { int n = lua_slen(L.emsg); const char *nm = lcname(lua_curid); for (int k = 0; nm[k] && n < 150; k++) L.emsg[n++] = nm[k]; L.emsg[n++] = '\''; L.emsg[n++] = ' '; L.emsg[n++] = '('; for (int k = 0; what[k] && n < 197; k++) L.emsg[n++] = what[k]; L.emsg[n++] = ')'; L.emsg[n] = 0; }
@@ -1606,7 +1639,7 @@ static int lcfn(int id, struct lval *a, int n) {
         int i = fs_resolve(p);
         if (i < 0) i = fs_create(p, 0);
         if (i < 0 || fsn[i].dir) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("cannot create the file"); return 2; }
-        if ((id == C_FS_WRITE ? sl : (u32)fsn[i].size + sl) > FS_FSZ) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("file is too big (max 2048 bytes)"); return 2; }
+        if ((id == C_FS_WRITE ? sl : (u32)fsn[i].size + sl) > FS_FSZ) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("file is too big (max 8192 bytes)"); return 2; }
         fs_write(i, s, (int)sl, id == C_FS_APPEND); fs_sync();
         return ret1(lbool_v(1));
     }
@@ -1633,10 +1666,24 @@ static int lcfn(int id, struct lval *a, int n) {
         return ret1(lbool_v(lua_edit(p)));
     }
     }
+#ifdef LUA_EXT
+    if (id >= C_EXT) return lua_ext(id, a, n);
+#endif
     lerr("unknown builtin"); return 0;
 }
 
 /* ---------- Запуск ---------- */
+static void lua_regfn(const char *lib, const char *name, int id) {      /* зарегистрировать встроенную функцию */
+    struct ltab *dst = L.globals;
+    if (lib) {
+        struct lval t = lgetfield(L.globals, lib);
+        if (t.t != LT_TAB) { t = ltab_v(lnewtab()); lsetfield(L.globals, lib, t); if (lib[0] == 's' && lib[1] == 't') L.strlib = t.u.tb; }
+        dst = t.u.tb;
+    }
+    struct lval f; f.t = LT_CFN; f.u.i = id;
+    lsetfield(dst, name, f);
+    if (id >= C_EXT && lua_nx < 128) { lua_xreg[lua_nx].name = name; lua_xreg[lua_nx].id = (u8)id; lua_nx++; }
+}
 static void lua_init(void) {
     lua_top = 0; gc_free = GC_NIL; gc_msn = 0; gc_ovf = 0;
     for (u32 i = 0; i < sizeof gc_bm / sizeof gc_bm[0]; i++) gc_bm[i] = 0;
@@ -1645,16 +1692,8 @@ static void lua_init(void) {
     L.sp = L.depth = L.line = L.err = L.nrv = L.interrupted = 0; L.errv = LNIL; L.chunk = 0; L.steps = 0; L.since_key = 0; L.npend = 0;
     if (!L.seed) L.seed = 2463534242u;
     L.globals = lnewtab(); L.s_index = lmks_p("__index", 7);
-    for (int i = 0; i < LUA_NREG; i++) {
-        struct ltab *dst = L.globals;
-        if (lua_reg[i].lib) {
-            struct lval t = lgetfield(L.globals, lua_reg[i].lib);
-            if (t.t != LT_TAB) { t = ltab_v(lnewtab()); lsetfield(L.globals, lua_reg[i].lib, t); if (lua_reg[i].lib[0] == 's' && lua_reg[i].lib[1] == 't') L.strlib = t.u.tb; }
-            dst = t.u.tb;
-        }
-        struct lval f; f.t = LT_CFN; f.u.i = lua_reg[i].id;
-        lsetfield(dst, lua_reg[i].name, f);
-    }
+    lua_nx = 0;
+    for (int i = 0; i < LUA_NREG; i++) lua_regfn(lua_reg[i].lib, lua_reg[i].name, lua_reg[i].id);
     struct lval mt = lgetfield(L.globals, "math"), tm = lgetfield(L.globals, "term");
     lsetfield(mt.u.tb, "maxinteger", lint_v(0x7fffffffffffffffLL)); lsetfield(mt.u.tb, "mininteger", lint_v((lint)(-0x7fffffffffffffffLL - 1)));
     lsetfield(mt.u.tb, "huge", lint_v(0x7fffffffffffffffLL));
@@ -1663,6 +1702,9 @@ static void lua_init(void) {
         {"F6", K_F1 + 5}, {"F7", K_F1 + 6}, {"F8", K_F1 + 7}, {"F9", K_F1 + 8}, {"F10", K_F1 + 9}, {"ESC", 27}, {"ENTER", 10}, {"BS", 8}, {"TAB", 9} };
     for (int i = 0; i < (int)(sizeof kc / sizeof kc[0]); i++) lsetfield(tm.u.tb, kc[i].n, lint_v(kc[i].v));
     if (fs_resolve("/lua") < 0) fs_create("/lua", 1);                 /* каталог для программ и их данных */
+#ifdef LUA_EXT
+    lua_ext_init();
+#endif
     lsetfield(L.globals, "_G", ltab_v(L.globals));
     lsetfield(L.globals, "_VERSION", lcstr_v("Lua (Cravgos, integer subset)"));
 }
@@ -1681,6 +1723,9 @@ static int lua_run_src(const char *src, int len, const char *chunk) {
         puts("lua: "); puts(L.emsg); putc('\n');
         if (L.errv.t != LT_NIL) { char b[40]; const char *p; int m = lts(L.errv, b, &p); puts("error value: "); lua_putstr(p, m); putc('\n'); }
     }
+#ifdef LUA_EXT
+    lua_ext_done();
+#endif
     color = oc; (void)ocx; (void)ocy;
     cursor_show();
     return bad;

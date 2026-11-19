@@ -10,13 +10,15 @@ for f in sorted(os.listdir(d)):
     name = f[:-4]
     assert re.fullmatch(r'[a-z0-9_-]{1,15}', name), f"bad package name: {name}"
     data = open(os.path.join(d, f), 'rb').read()
-    assert len(data) <= 2048, f"{f}: {len(data)} bytes, max 2048 (RAMFS limit)"
+    bundle = data.startswith(b'--stas-bundle')
+    assert bundle or len(data) <= 8192, f"{f}: {len(data)} bytes, max 8192 (RAMFS limit)"
     desc = name
-    for first in data.split(b'\n')[:4]:
+    text = data.split(b'@@ ' + name.encode() + b' ', 1)[-1] if bundle else data
+    for first in text.split(b'\n')[:6]:
         m = re.match(r'(?:#|--)\s*' + re.escape(name) + r'\s*-\s*(.*)', first.decode())
         if m: desc = m.group(1).strip(); break
     lines.append(f"{name} {hashlib.sha256(data).hexdigest()} {len(data)} {desc}")
 out = '\n'.join(lines) + '\n'
-assert len(out) <= 2048, "index.txt must stay under 2048 bytes"
+assert len(out) <= 8192, "index.txt must stay under 8192 bytes"
 open(os.path.join(d, 'index.txt'), 'w', newline='\n').write(out)
 print(out, end='')

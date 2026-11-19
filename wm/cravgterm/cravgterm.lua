@@ -1,0 +1,71 @@
+--lua
+--needs cravgwm
+-- cravgterm - terminal window: runs shell commands (needs /etc/cravgwm/exec-allow), opens WM programs. Config: cravgterm.xml
+local M = {}
+function M.new(W, args)
+  local U, UI = W.u, W.ui
+  local root = W.xml.load("/etc/cravgwm/cravgterm.xml") or {a = {}, list = function() return {} end}
+  local a = root.a
+  local sc = U.num(a.scale, 1)
+  local c = {title = "terminal", class = "cravgterm", w = U.num(a.width, 640), h = U.num(a.height, 400), fg = U.color(a.fg, 0xcccccc), bg = U.color(a.bg, 0x101010),
+    prompt = a.prompt or "$ ", lines = {}, inp = UI.input(""), hist = {}, hi = 0, off = 0, alias = {}}
+  for _, e in ipairs(root:list("alias")) do c.alias[e.a.name or ""] = e.a.value end
+  local maxl = U.num(a.scrollback, 200)
+  function c:print(s)
+    for _, l in ipairs(U.split(s, "\n")) do
+      local cols = math.max(8, self.w // (8 * sc))
+      repeat
+        self.lines[#self.lines + 1] = l:sub(1, cols)
+        l = l:sub(cols + 1)
+      until #l == 0
+    end
+    while #self.lines > maxl do table.remove(self.lines, 1) end
+    self.off = 0
+  end
+  function c:exec(line)
+    self:print(self.prompt .. line)
+    line = U.trim(line)
+    if line == "" then return end
+    self.hist[#self.hist + 1] = line self.hi = 0
+    local sp = line:find(" ", 1, true)
+    local cmd, rest = line:sub(1, (sp or #line + 1) - 1), sp and line:sub(sp + 1) or ""
+    if self.alias[cmd] then line = self.alias[cmd] .. " " .. rest sp = line:find(" ", 1, true) cmd = line:sub(1, (sp or #line + 1) - 1) rest = sp and line:sub(sp + 1) or "" end
+    if cmd == "clear" then self.lines = {}
+    elseif cmd == "exit" then W.close(self.win)
+    elseif cmd == "help" then self:print("builtins: clear exit help lua EXPR\nprograms: name of a WM program (cravgfm ...)\nothers: shell commands, if this file is listed in /etc/cravgwm/exec-allow")
+    elseif cmd == "lua" then
+      local f, e = load("return " .. rest, "=term")
+      if not f then f, e = load(rest, "=term") end
+      if not f then self:print(e) else local r = {pcall(f)} if not r[1] then self:print(tostring(r[2])) else local o = {} for i = 2, #r do o[#o + 1] = tostring(r[i]) end self:print(table.concat(o, "  ")) end end
+    elseif fs.exists("/apps/" .. cmd) and not (W.apps[cmd] == nil and fs.read("/apps/" .. cmd):sub(1, 5) ~= "--lua") and W.spawn(cmd, rest) then
+    else
+      local o, e = os.exec(line)
+      if o then if #o > 0 then self:print(o:sub(1, #o - (o:sub(-1) == "\n" and 1 or 0))) end else self:print(tostring(e)) end
+    end
+  end
+  function c:start(w) self:print("cravgterm: type help") end
+  function c:draw(s, w, h)
+    gfx.fill(0, 0, w, h, self.bg)
+    local rows = (h // (16 * sc)) - 1
+    local first = math.max(1, #self.lines - rows + 1 - self.off)
+    for i = 0, rows - 1 do
+      local l = self.lines[first + i]
+      if l then gfx.text(2, i * 16 * sc, l, self.fg, sc) end
+    end
+    local y = (rows) * 16 * sc
+    gfx.text(2, y, self.prompt, 0x66dd66, sc)
+    UI.draw_input(self.inp, 2 + #self.prompt * 8 * sc, y, w - 8 - #self.prompt * 8 * sc, self.fg, sc)
+  end
+  function c:tick() local b = (os.ms() // 500) % 2 if b ~= self.blink then self.blink = b return true end end
+  function c:key(k, m)
+    if k == 10 then local l = self.inp.t self.inp = UI.input("") self:exec(l) return true end
+    if k == term.UP then if #self.hist > 0 then self.hi = math.min(self.hi + 1, #self.hist) self.inp = UI.input(self.hist[#self.hist - self.hi + 1]) end return true end
+    if k == term.DOWN then self.hi = math.max(self.hi - 1, 0) self.inp = UI.input(self.hi > 0 and self.hist[#self.hist - self.hi + 1] or "") return true end
+    if k == term.PGUP then self.off = math.min(self.off + 5, #self.lines) return true end
+    if k == term.PGDN then self.off = math.max(self.off - 5, 0) return true end
+    return UI.edit(self.inp, k, m)
+  end
+  function c:mouse(ev) if ev.t == "wheel" then self.off = U.clamp(self.off + (ev.wheel > 0 and 3 or -3), 0, #self.lines) return true end end
+  return c
+end
+return M

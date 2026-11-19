@@ -5,7 +5,10 @@ import subprocess, os, sys
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(root)
 
-tests = ['test_fs', 'test_net', 'test_html', 'test_http', 'test_crypto', 'test_stas', 'test_lua', 'test_lua_apps']
+# пакеты WM собираются перед тестами (test_wm ставит их из stas-repo/)
+subprocess.run([sys.executable, 'tools/stas_bundle.py'], check=True, stdout=subprocess.DEVNULL)
+subprocess.run([sys.executable, 'tests/gen_testfont.py'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+tests = ['test_fs', 'test_net', 'test_html', 'test_http', 'test_crypto', 'test_stas', 'test_lua', 'test_lua_apps', 'test_gfx', 'test_wm']
 failed = 0
 for t in tests:
     print(f"=== Running {t} ===")

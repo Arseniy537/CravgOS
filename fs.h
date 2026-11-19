@@ -1,8 +1,11 @@
 /* fs.h - файловая система в памяти (RAMFS). Чистый C, без ввода-вывода. */
 #ifndef FS_H
 #define FS_H
-#define FS_MAXN 64
-#define FS_FSZ  2048
+#define FS_MAXN 128
+#define FS_FSZ  8192
+#ifndef FS_ATTR
+#define FS_ATTR
+#endif
 #define FS_NAME 16
 
 #define FS_EBAD     -1
@@ -14,13 +17,9 @@
 #define FS_ENOTEMPTY -7
 #define FS_EBUSY    -8
 
-#ifndef XBSS
-#define XBSS
-#endif
-
 struct fsnode { char name[FS_NAME]; u8 used, dir, parent; u16 size; };
 static struct fsnode fsn[FS_MAXN];
-static u8 fsdata[FS_MAXN][FS_FSZ] XBSS;
+static u8 fsdata[FS_MAXN][FS_FSZ] FS_ATTR;
 static int fs_cwd;
 
 static int fs_scmp(const char *a, int alen, const char *b) {
@@ -28,7 +27,7 @@ static int fs_scmp(const char *a, int alen, const char *b) {
     return b[alen] == 0;
 }
 static void fs_init(void) {
-    for (int i = 0; i < FS_MAXN; i++) fsn[i].used = 0;
+    for (int i = 0; i < FS_MAXN; i++) { fsn[i].used = 0; for (int k = 0; k < FS_FSZ; k++) fsdata[i][k] = 0; }
     fsn[0].used = 1; fsn[0].dir = 1; fsn[0].parent = 0; fsn[0].name[0] = 0; fsn[0].size = 0;
     fs_cwd = 0;
 }

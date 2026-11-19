@@ -47,8 +47,8 @@ static int any_snap_has(const char *t) { for (int i = 0; i < nsnap; i++) if (sna
 static int install(const char *name) {
     char path[100]; snprintf(path, sizeof path, "stas-repo/%s.stp", name);
     FILE *f = fopen(path, "rb"); if (!f) { printf("cannot open %s (run from repo root)\n", path); exit(2); }
-    char b[4096]; int n = (int)fread(b, 1, sizeof b, f); fclose(f);
-    if (n > FS_FSZ) { printf("FAIL: %s is %d bytes (max 2048)\n", name, n); fails++; return -1; }
+    char b[8192]; int n = (int)fread(b, 1, sizeof b, f); fclose(f);
+    if (n > FS_FSZ) { printf("FAIL: %s is %d bytes (max %d)\n", name, n, FS_FSZ); fails++; return -1; }
     if (fs_resolve("/apps") < 0) fs_create("/apps", 1);
     char p[64]; snprintf(p, sizeof p, "/apps/%s", name);
     int i = fs_resolve(p); if (i < 0) i = fs_create(p, 0);

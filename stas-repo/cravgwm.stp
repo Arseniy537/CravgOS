@@ -1,0 +1,1263 @@
+--stas-bundle
+@@ cravgwm 3068
+--lua
+--members cwm-act cwm-comp cwm-conf cwm-deco cwm-input cwm-menu cwm-paint cwm-ui cwm-util cwm-win cwm-wops cwm-xml cwm-xmlf
+-- cravgwm - floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
+if CWM then return CWM end
+local W = {}
+CWM = W
+local MODS = {"cwm-util", "cwm-xml", "cwm-xmlf", "cwm-conf", "cwm-win", "cwm-wops", "cwm-deco", "cwm-act", "cwm-input", "cwm-paint", "cwm-ui"}
+local sw, sh = gfx.init()
+if not sw then print("cravgwm: " .. tostring(sh)) return end
+W.sw, W.sh = sw, sh
+W.apps = {}
+function W.log(m) end                                   -- до загрузки cwm-paint
+for _, m in ipairs(MODS) do dofile("/apps/" .. m)(W) end
+-- запуск программы по имени из /apps; возвращает окно
+function W.spawn(name, args)
+  local mod = W.apps[name]
+  if not mod then
+    if not fs.exists("/apps/" .. name) then W.log("not installed: " .. name .. " (stas install " .. name .. ")") return end
+    local ok, m = pcall(dofile, "/apps/" .. name)
+    if not ok or type(m) ~= "table" or not m.new then W.log(name .. ": " .. (ok and "is not a window program" or tostring(m))) return end
+    W.apps[name], mod = m, m
+  end
+  if mod.single then
+    for _, w in ipairs(W.wins) do if w.c.app == name then W.raise(w) W.focus_win(w) return w end end
+  end
+  local ok, c = pcall(mod.new, W, args or "")
+  if not ok or not c then W.log(name .. ": " .. tostring(c)) return end
+  c.app = name
+  c.class = c.class or name
+  return W.add(c)
+end
+function W.damage_all()
+  W.damage(0, 0, sw, sh)
+  for _, w in ipairs(W.wins) do w.fdirty = true w.cdirty = true end
+end
+local function start()
+  W.conf.load()
+  if fs.exists("/etc/cravgwm/cravgcomp.xml") then dofile("/apps/cwm-comp")(W) W.comp.load() end
+  for _, cmd in ipairs(W.cfg.autostart) do W.run(cmd) end
+  W.desk = math.min(W.desk, W.cfg.desktops)
+  W.damage_all()
+end
+local function tick(dt)
+  for _, w in ipairs(W.wins) do
+    if w.c.tick and W.visible(w) and w.c:tick(dt) then w.cdirty = true end
+  end
+  if W.comp then W.comp.tick(dt) end
+  if #W.logs > 0 and os.ms() - W.logs[1][2] > 15000 then table.remove(W.logs, 1) W.damage(0, 0, sw, 90) end
+end
+W.mkcursor()
+W.mx, W.my = gfx.mouse()
+W.cfg = nil
+local ok, err = pcall(start)
+if not ok then W.log("startup: " .. tostring(err)) end
+if not W.cfg then W.cfg = {} end
+local last = os.ms()
+while not W.quit do
+  local ev, n = gfx.poll(), 0
+  while ev and n < 64 do
+    local ok2, e2 = pcall(ev.type == "key" and W.input.key or W.input.mouse, ev)
+    if not ok2 then W.log("input: " .. tostring(e2)) end
+    n = n + 1
+    ev = gfx.poll()
+  end
+  local now = os.ms()
+  local ok3, e3 = pcall(tick, now - last)
+  if not ok3 then W.log("tick: " .. tostring(e3)) end
+  last = now
+  if W.reconf then
+    W.reconf = false
+    local ok4, e4 = pcall(function() W.conf.load() W.damage_all() end)
+    if not ok4 then W.log("reconfigure: " .. tostring(e4)) end
+  end
+  local ok5, e5 = pcall(W.render)
+  if not ok5 then W.log("render: " .. tostring(e5)) W.dx = nil end
+  os.sleep(5)
+end
+gfx.close()
+CWM = nil
+
+@@ cwm-act 3329
+--lua
+-- cwm-act - actions for key and mouse bindings (module of cravgwm)
+return function(W)
+  local U = W.u
+  local A = {}
+  W.act = A
+  local function pct(v, base, def)               -- число или "50%"
+    if not v then return def end
+    if v:sub(-1) == "%" then return (tonumber(v:sub(1, -2)) or 0) * base // 100 end
+    return tonumber(v) or def
+  end
+  -- запуск программы: "имя аргументы"
+  function W.run(cmd)
+    cmd = U.trim(cmd or "")
+    if cmd == "" then return end
+    local sp = cmd:find(" ", 1, true)
+    local name, args = cmd:sub(1, (sp or #cmd + 1) - 1), sp and U.trim(cmd:sub(sp + 1)) or ""
+    return W.spawn(name, args)
+  end
+  function A.Execute(c, a) W.run(a.command or a.execute) end
+  function A.Exit() W.quit = true end
+  function A.Reconfigure() W.reconf = true end
+  function A.Close(c) if c.w then W.close(c.w) end end
+  function A.Raise(c) if c.w then W.raise(c.w) end end
+  function A.Lower(c) if c.w then W.lower(c.w) end end
+  function A.Focus(c) if c.w and not c.w.kind then W.focus_win(c.w) end end
+  function A.Iconify(c) if c.w then W.iconify(c.w) end end
+  function A.Maximize(c) if c.w then W.maximize(c.w, true) end end
+  function A.Unmaximize(c) if c.w then W.maximize(c.w, false) end end
+  function A.ToggleMaximize(c) if c.w then W.maximize(c.w, not c.w.max) end end
+  function A.Shade(c) if c.w then W.shade(c.w, true) end end
+  function A.Unshade(c) if c.w then W.shade(c.w, false) end end
+  function A.ToggleShade(c) if c.w then W.shade(c.w, not c.w.shade) end end
+  function A.ToggleFullscreen(c) if c.w then W.fullscreen(c.w, not c.w.full) end end
+  function A.ToggleDecorations(c) if c.w then W.nodecor(c.w, not c.w.nodecor) end end
+  function A.ToggleAlwaysOnTop(c) local w = c.w if w and not w.kind then w.layer = w.layer == 3 and 2 or 3 W.raise(w) end end
+  function A.ToggleOmnipresent(c) local w = c.w if w and not w.kind then w.desk = w.desk == 0 and W.desk or 0 W.damage(0, 0, W.sw, W.sh) end end
+  function A.SendToDesktop(c, a) if c.w then W.send(c.w, tonumber(a.to) or W.desk) end end
+  function A.GoToDesktop(c, a)
+    local to = a.to or "1"
+    if to == "next" then W.goto(W.desk % W.cfg.desktops + 1) elseif to == "previous" or to == "prev" then W.goto((W.desk - 2) % W.cfg.desktops + 1)
+    else W.goto(tonumber(to) or W.desk) end
+  end
+  function A.NextWindow() W.cycle(1) end
+  function A.PreviousWindow() W.cycle(-1) end
+  function A.MoveResizeTo(c, a)
+    local w = c.w
+    if not w or w.kind then return end
+    local wx, wy, ww, wh = W.work()
+    if w.max then W.maximize(w, false) end
+    local b, t = W.mets(w)
+    local nw, nh = pct(a.width, ww, w.cw + 2 * b), pct(a.height, wh, w.ch + t + 2 * b)
+    W.move(w, wx + pct(a.x, ww, w.x - wx), wy + pct(a.y, wh, w.y - wy))
+    W.resize(w, nw - 2 * b, nh - t - 2 * b)
+  end
+  function A.ShowMenu(c, a)
+    if not W.menu then dofile("/apps/cwm-menu")(W) end
+    W.menu.show(a.menu or "root-menu", c)
+  end
+  function A.Move(c) if c.w and not c.w.max then W.input.start("move", c.w, c.ev) end end
+  function A.Resize(c) if c.w and not c.w.max then W.input.start("resize", c.w, c.ev, c.ctx) end end
+  function W.do_acts(list, ctx)
+    for _, a in ipairs(list) do
+      local f = A[a.name]
+      if f then f(ctx, a.a) else W.log("unknown action " .. a.name) end
+    end
+  end
+end
+
+@@ cwm-comp 5594
+--lua
+-- cwm-comp - compositor (cravgcomp): shadows, opacity, fading, rounded corners. Config: /etc/cravgwm/cravgcomp.xml
+return function(W)
+  local U = W.u
+  local C = {ghost = {}, anim = false}
+  W.comp = C
+  local cf = {shadow = false, sr = 14, sa = 110, sx = 0, sy = 5, sc = 0, fade = false, fin = 150, fout = 110, oa = 100, oi = 100, cr = 0, rules = {}}
+  C.cf = cf
+  function C.load()
+    local root, err = W.xml.load("/etc/cravgwm/cravgcomp.xml")
+    if not root then W.log("cravgcomp: " .. err) return end
+    for _, n in ipairs(root.k) do
+      local a = n.a
+      if n.tag == "shadow" then
+        cf.shadow = U.bool(a.enabled, true) cf.sr = U.num(a.radius, cf.sr) cf.sa = U.clamp(U.num(a.opacity, cf.sa), 0, 255)
+        cf.sx, cf.sy, cf.sc = U.num(a.x, 0), U.num(a.y, cf.sy), U.color(a.color, 0)
+      elseif n.tag == "fade" then cf.fade = U.bool(a.enabled, true) cf.fin = U.num(a["in"], cf.fin) cf.fout = U.num(a.out, cf.fout)
+      elseif n.tag == "opacity" then cf.oa = U.clamp(U.num(a.active, 100), 0, 100) cf.oi = U.clamp(U.num(a.inactive, 100), 0, 100)
+      elseif n.tag == "corners" then cf.cr = U.num(a.radius, 0)
+      elseif n.tag == "rule" then cf.rules[a.class or "*"] = a end
+    end
+  end
+  local function rule(w) return cf.rules[w.class] or cf.rules["*"] or {} end
+  local function opts(w)                       -- эффективные параметры окна
+    local r = rule(w)
+    local plain = w.kind == "desktop"
+    local sh = not plain and not w.max and not w.full and U.bool(r.shadow, cf.shadow)
+    local op = r.opacity and U.num(r.opacity, 100) or ((W.focus == w or w.kind) and cf.oa or cf.oi)
+    if w.alpha then op = w.alpha end
+    return sh, U.clamp(op, 0, 100) * 255 // 100, (plain or w.kind == "dock" or w.max or w.full) and 0 or U.num(r.corners, cf.cr)
+  end
+  function C.opened(w)
+    w.cp = {fade = 255}
+    if cf.fade and w.kind ~= "desktop" then w.cp.fade, w.cp.t0, w.cp.dur, w.cp.to = 0, os.ms(), cf.fin, 255 C.anim = true end
+  end
+  function C.after_draw(w)                     -- скруглить углы кадра (прозрачные пиксели)
+    local _, _, r = opts(w)
+    if r < 1 or not w.fs then return end
+    local fw, fh = W.fsize(w)
+    r = math.min(r, fw // 2, fh // 2)
+    gfx.target(w.fs)
+    for j = 0, r - 1 do
+      local run = r - math.floor(math.sqrt(r * r - (r - j) * (r - j)))
+      if run > 0 then
+        gfx.raw(0, j, run, 1, 0) gfx.raw(fw - run, j, run, 1, 0) gfx.raw(0, fh - 1 - j, run, 1, 0) gfx.raw(fw - run, fh - 1 - j, run, 1, 0)
+      end
+    end
+    gfx.target(0)
+  end
+  -- тень с учётом смещения: кадр окна вырезается из неё точно (под окном тени нет)
+  local function shadow(w, fw, fh)
+    local cp = w.cp
+    if cp.sh and cp.shw == fw and cp.shh == fh then return cp.sh end
+    if cp.sh then gfx.free(cp.sh) cp.sh = nil end
+    local mx, my = cf.sr + math.abs(cf.sx), cf.sr + math.abs(cf.sy)
+    local s = gfx.surface(fw + 2 * mx, fh + 2 * my)
+    if not s then return nil end
+    gfx.target(s)
+    gfx.shadow(mx + cf.sx, my + cf.sy, fw, fh, cf.sr, cf.sa, cf.sc, 2)
+    gfx.raw(mx, my, fw, fh, 0)
+    gfx.target(0)
+    cp.sh, cp.shw, cp.shh, cp.mx, cp.my = s, fw, fh, mx, my
+    return s
+  end
+  function C.paint(w)
+    local cp = w.cp
+    if not cp then C.opened(w) cp = w.cp end
+    local sh, op, cr = opts(w)
+    local fw, fh = W.fsize(w)
+    local f = cp.fade
+    if sh and cf.sr > 0 then
+      local s = shadow(w, fw, fh)
+      if s then gfx.blit(s, w.x - cp.mx, w.y - cp.my, f) end
+    end
+    if op * f >= 255 * 255 and cr == 0 then gfx.blit(w.fs, w.x, w.y) else gfx.blit(w.fs, w.x, w.y, op * f // 255) end
+  end
+  function C.closed(w)                         -- окно закрыто: оставить кадр на время затухания
+    local cp = w.cp
+    if cp and cp.sh and not (cf.fade and w.fs) then gfx.free(cp.sh) end
+    if not (cf.fade and w.fs and cf.fout > 0) then return false end
+    local _, op = opts(w)
+    local fw, fh = W.fsize(w)
+    local g = {fs = w.fs, sh = cp and cp.sh, x = w.x, y = w.y, fw = fw, fh = fh, t0 = os.ms(), dur = cf.fout, op = op, mx = cp and cp.mx or 0, my = cp and cp.my or 0}
+    local sh = opts(w)
+    g.noshadow = not sh
+    C.ghost[#C.ghost + 1] = g
+    C.anim = true
+    return true
+  end
+  function C.ghosts()
+    for _, g in ipairs(C.ghost) do
+      local k = 255 - U.clamp((os.ms() - g.t0) * 255 // g.dur, 0, 255)
+      if g.sh and not g.noshadow then gfx.blit(g.sh, g.x - g.mx, g.y - g.my, k) end
+      gfx.blit(g.fs, g.x, g.y, g.op * k // 255)
+    end
+  end
+  function C.pending() return C.anim end
+  function C.step()                            -- шаг анимации: перерисовать затронутые окна
+    local now, busy = os.ms(), false
+    for _, w in ipairs(W.wins) do
+      local cp = w.cp
+      if cp and cp.t0 then
+        local k = U.clamp((now - cp.t0) * 255 // math.max(cp.dur, 1), 0, 255)
+        cp.fade = cp.to == 255 and k or 255 - k
+        if k >= 255 then cp.t0 = nil else busy = true end
+        W.dmg(w)
+      end
+    end
+    for i = #C.ghost, 1, -1 do
+      local g = C.ghost[i]
+      W.damage(g.x - cf.sr - 10, g.y - cf.sr - 10, g.fw + 2 * cf.sr + 30, g.fh + 2 * cf.sr + 30)
+      if now - g.t0 >= g.dur then
+        gfx.free(g.fs) if g.sh then gfx.free(g.sh) end
+        table.remove(C.ghost, i)
+      else busy = true end
+    end
+    C.anim = busy
+  end
+  function C.tick(dt) if W.focus ~= C.lastfocus then C.lastfocus = W.focus for _, w in ipairs(W.wins) do if w.cp then W.dmg(w) end end end end
+end
+
+@@ cwm-conf 5535
+--lua
+-- cwm-conf - reads /etc/cravgwm/rc.xml (module of cravgwm)
+return function(W)
+  local U, X = W.u, W.xml
+  local C = {path = "/etc/cravgwm/"}
+  W.conf = C
+  local KEYS = {Tab = 9, Return = 10, Enter = 10, Escape = 27, space = 32, BackSpace = 8, Delete = "DEL", Home = "HOME", End = "END",
+    Prior = "PGUP", Next = "PGDN", Insert = "INS", Left = "LEFT", Right = "RIGHT", Up = "UP", Down = "DOWN"}
+  local function mods(spec)
+    local m, i = 0, 1
+    while true do
+      local p = spec:sub(i, i + 1)
+      if p == "S-" then m = m | 1 elseif p == "C-" then m = m | 2 elseif p == "A-" or p == "M-" then m = m | 4 elseif p == "W-" then m = m | 8 else break end
+      i = i + 2
+    end
+    return m, spec:sub(i)
+  end
+  -- "A-Tab" -> {k = key code, m = modifiers: 1 shift, 2 ctrl, 4 alt, 8 super}
+  function C.key(spec)
+    local m, name = mods(spec)
+    local k = KEYS[name]
+    if type(k) == "string" then k = term[k] end
+    local fn = name:sub(1, 1) == "F" and tonumber(name:sub(2))
+    if not k and fn then k = term.F1 + fn - 1 end
+    if not k and #name == 1 then k = name:lower():byte() end
+    if k then return {k = k, m = m} end
+  end
+  local BTN = {Left = 1, Right = 2, Middle = 4, Up = "up", Down = "down"}
+  function C.btn(spec) local m, name = mods(spec) return m, BTN[name] end
+  -- <action name="X"><arg>v</arg></action> -> {name = "X", a = {arg = "v"}}
+  local function acts(node)
+    local r = {}
+    for _, a in ipairs(node:list("action")) do
+      local t = {name = a.a.name or "", a = {}}
+      for k, v in pairs(a.a) do t.a[k] = v end
+      for _, c in ipairs(a.k) do t.a[c.tag] = c.t end
+      r[#r + 1] = t
+    end
+    return r
+  end
+  C.acts = acts
+  local function defaults()
+    return {desktops = 1, dnames = {}, focus = {model = "click", raise = true}, place = "center", keys = {}, mouse = {}, rules = {},
+      autostart = {}, menu = C.path .. "menu.xml", wheel = 1,
+      theme = {title = 22, border = 2, scale = 1, radius = 0, align = "left", bsize = 14, bgap = 4,
+        a = {t1 = 0x2a5caa, t2 = 0x2a5caa, tx = 0xFFFFFF, bd = 0x2a5caa}, i = {t1 = 0x555555, t2 = 0x555555, tx = 0xCCCCCC, bd = 0x555555},
+        close = 0xCC3333, max = 0x33AA33, min = 0xCCAA33, btx = 0xFFFFFF, root = 0x101820,
+        menu = {bg = 0x222222, fg = 0xDDDDDD, sel = 0x2a5caa, selfg = 0xFFFFFF, bd = 0x555555, sc = 1}}}
+  end
+  function C.load()
+    local cfg = defaults()
+    W.cfg = cfg
+    local root, err = X.load(C.path .. "rc.xml")
+    if not root then W.log("rc.xml: " .. err) return cfg end
+    local th = cfg.theme
+    for _, n in ipairs(root.k) do
+      local t, a = n.tag, n.a
+      if t == "desktops" then
+        cfg.desktops = U.clamp(U.num(a.number, 1), 1, 9)
+        for i, nm in ipairs(n:list("name")) do cfg.dnames[i] = nm.t end
+      elseif t == "focus" then cfg.focus.model = a.model or "click" cfg.focus.raise = U.bool(a.raise, true)
+      elseif t == "placement" then cfg.place = a.policy or "center"
+      elseif t == "autostart" then for _, r in ipairs(n:list("run")) do cfg.autostart[#cfg.autostart + 1] = r.t end
+      elseif t == "menu" then cfg.menu = a.file or cfg.menu
+      elseif t == "theme" then
+        for _, c in ipairs(n.k) do
+          local ca = c.a
+          if c.tag == "title" then th.title = U.num(ca.height, th.title) th.scale = U.num(ca.scale, 1) th.align = ca.align or th.align
+          elseif c.tag == "border" then th.border = U.num(ca.width, th.border) th.radius = U.num(ca.radius, 0)
+          elseif c.tag == "root" then th.root = U.color(ca.color, th.root)
+          elseif c.tag == "buttons" then
+            th.bsize = U.num(ca.size, th.bsize) th.bgap = U.num(ca.gap, th.bgap) th.close = U.color(ca.close, th.close)
+            th.max = U.color(ca.max, th.max) th.min = U.color(ca.min, th.min) th.btx = U.color(ca.text, th.btx)
+          elseif c.tag == "active" or c.tag == "inactive" then
+            local s = c.tag == "active" and th.a or th.i
+            s.t1 = U.color(ca.title, s.t1) s.t2 = U.color(ca.title2, ca.title and U.color(ca.title, s.t1) or s.t2)
+            s.tx = U.color(ca.text, s.tx) s.bd = U.color(ca.border, s.bd)
+          elseif c.tag == "menu" then
+            local m = th.menu
+            m.bg = U.color(ca.bg, m.bg) m.fg = U.color(ca.fg, m.fg) m.sel = U.color(ca.sel, m.sel) m.selfg = U.color(ca.selfg, m.selfg)
+            m.bd = U.color(ca.border, m.bd) m.sc = U.num(ca.scale, 1)
+          end
+        end
+      elseif t == "keyboard" then
+        for _, kb in ipairs(n:list("keybind")) do
+          local k = C.key(kb.a.key or "")
+          if k then k.acts = acts(kb) cfg.keys[#cfg.keys + 1] = k else W.log("rc.xml: bad key " .. tostring(kb.a.key)) end
+        end
+      elseif t == "mouse" then
+        cfg.wheel = a.wheel == "inverted" and -1 or 1
+        for _, cx in ipairs(n:list("context")) do
+          local l = cfg.mouse[cx.a.name or ""] or {}
+          cfg.mouse[cx.a.name or ""] = l
+          for _, mb in ipairs(cx:list("mousebind")) do
+            local m, b = C.btn(mb.a.button or "")
+            if b then l[#l + 1] = {m = m, b = b, how = mb.a.action or "Press", acts = acts(mb)} else W.log("rc.xml: bad button " .. tostring(mb.a.button)) end
+          end
+        end
+      elseif t == "applications" then
+        for _, ap in ipairs(n:list("application")) do
+          local r = {class = ap.a.class or "*"}
+          for _, c in ipairs(ap.k) do r[c.tag] = c.t for k, v in pairs(c.a) do r[c.tag .. "." .. k] = v end end
+          cfg.rules[#cfg.rules + 1] = r
+        end
+      end
+    end
+    return cfg
+  end
+end
+
+@@ cwm-deco 2904
+--lua
+-- cwm-deco - window frames: drawing and hit testing (module of cravgwm)
+return function(W)
+  local U, D = W.u, {}
+  W.deco = D
+  -- title buttons from the right: Close, Maximize, Iconify -> {name, x, y}
+  local function buttons(w, fw)
+    local th = W.cfg.theme
+    local b, t = W.mets(w)
+    local y, x = b + (t - th.bsize) // 2, fw - b - th.bgap - th.bsize
+    return {{"Close", x, y}, {"Maximize", x - th.bsize - th.bgap, y}, {"Iconify", x - 2 * (th.bsize + th.bgap), y}}
+  end
+  function D.draw(w)
+    local th = W.cfg.theme
+    local b, t = W.mets(w)
+    local fw, fh = W.fsize(w)
+    local s = W.focus == w and th.a or th.i
+    gfx.target(w.fs)
+    gfx.clip()
+    if b == 0 and t == 0 then gfx.blit(w.cs, 0, 0) gfx.target(0) return end
+    gfx.fill(0, 0, fw, fh, s.bd)
+    if t > 0 then
+      if s.t1 ~= s.t2 then gfx.grad(b, b, fw - 2 * b, t, s.t1, s.t2, true) else gfx.fill(b, b, fw - 2 * b, t, s.t1) end
+      local bs, sc, sz = buttons(w, fw), th.scale, th.bsize
+      local room = bs[3][2] - b - 10
+      local txt = U.fit(w.title, room, sc)
+      local tx = th.align == "center" and b + 4 + (room - gfx.textw(txt, sc)) // 2 or b + 6
+      gfx.text(tx, b + (t - 16 * sc) // 2, txt, s.tx, sc)
+      for _, bt in ipairs(bs) do
+        local x, y = bt[2], bt[3]
+        gfx.fill(x, y, sz, sz, bt[1] == "Close" and th.close or bt[1] == "Maximize" and th.max or th.min)
+        if bt[1] == "Close" then
+          for i = 0, sz - 6 do gfx.fill(x + 2 + i, y + 2 + i, 2, 2, th.btx) gfx.fill(x + sz - 4 - i, y + 2 + i, 2, 2, th.btx) end
+        elseif bt[1] == "Maximize" then
+          gfx.fill(x + 3, y + 3, sz - 6, 2, th.btx) gfx.fill(x + 3, y + sz - 5, sz - 6, 2, th.btx)
+          gfx.fill(x + 3, y + 3, 2, sz - 6, th.btx) gfx.fill(x + sz - 5, y + 3, 2, sz - 6, th.btx)
+        else gfx.fill(x + 3, y + sz - 6, sz - 6, 2, th.btx) end
+      end
+    end
+    if not w.shade then gfx.blit(w.cs, b, b + t) end
+    gfx.target(0)
+  end
+  -- context under the point (x, y are relative to the frame)
+  function D.hit(w, x, y)
+    local th = W.cfg.theme
+    local b, t = W.mets(w)
+    local fw, fh = W.fsize(w)
+    if b == 0 and t == 0 then return "Client" end
+    local g, c = math.max(b, 4), 14
+    local top, bot, lef, rig = y < g, y >= fh - g, x < g, x >= fw - g
+    if (top and x < c) or (lef and y < c) then return "TLCorner" end
+    if (top and x >= fw - c) or (rig and y < c) then return "TRCorner" end
+    if (bot and x < c) or (lef and y >= fh - c) then return "BLCorner" end
+    if (bot and x >= fw - c) or (rig and y >= fh - c) then return "BRCorner" end
+    if top then return "Top" elseif bot then return "Bottom" elseif lef then return "Left" elseif rig then return "Right" end
+    if y < b + t then
+      for _, bt in ipairs(buttons(w, fw)) do if U.inside(x, y, bt[2], bt[3], th.bsize, th.bsize) then return bt[1] end end
+      return "Titlebar"
+    end
+    return "Client"
+  end
+end
+
+@@ cwm-input 5435
+--lua
+-- cwm-input - keyboard and mouse: bindings, focus, move and resize (module of cravgwm)
+return function(W)
+  local U = W.u
+  local I = {press = {}}
+  W.input = I
+  local EDGE = {Top = {0, -1}, Bottom = {0, 1}, Left = {-1, 0}, Right = {1, 0}, TLCorner = {-1, -1}, TRCorner = {1, -1}, BLCorner = {-1, 1}, BRCorner = {1, 1}}
+  local BITS = {1, 2, 4}
+  function I.start(kind, w, ev, ctx)
+    local x, y = ev and ev.x or W.mx, ev and ev.y or W.my
+    if kind == "move" then I.drag = {k = "move", w = w, ox = x - w.x, oy = y - w.y} return end
+    local e = EDGE[ctx or ""]
+    if not e then
+      local fx, fy, fw, fh = W.frect(w)
+      e = {x < fx + fw // 3 and -1 or x > fx + 2 * fw // 3 and 1 or 0, y < fy + fh // 3 and -1 or y > fy + 2 * fh // 3 and 1 or 0}
+      if e[1] == 0 and e[2] == 0 then e = {1, 1} end
+    end
+    I.drag = {k = "resize", w = w, e = e, x0 = x, y0 = y, fx = w.x, fy = w.y, cw = w.cw, ch = w.ch}
+  end
+  local function fire(names, how, btn, mods, c)
+    local hit = false
+    for _, n in ipairs(names) do
+      for _, b in ipairs(W.cfg.mouse[n] or {}) do
+        if b.b == btn and b.how == how and b.m == mods then W.do_acts(b.acts, c) hit = true end
+      end
+    end
+    return hit
+  end
+  local function names(w, ctx) if not w then return {"Root"} end return {ctx, "Frame"} end
+  function I.key(ev)
+    local k, m = ev.base or ev.key, ev.mods
+    if k == 8 and m == 6 then W.quit = true return end                     -- Ctrl+Alt+BackSpace: аварийный выход
+    if W.grab and W.grab.key and W.grab:key(ev) then return end
+    for _, kb in ipairs(W.cfg.keys) do
+      if kb.k == k and kb.m == m then W.do_acts(kb.acts, {w = W.focus, ev = ev}) return end
+    end
+    local f = W.focus
+    if f and f.c.key and f.c:key(ev.key, m, ev) then f.cdirty = true end
+  end
+  local function client(w, ev, t, b)
+    if not w.c.mouse then return end
+    local bd, th = W.mets(w)
+    if w.c:mouse({t = t, x = ev.x - w.x - bd, y = ev.y - w.y - bd - th, btn = b or 0, mods = ev.mods, wheel = ev.wheel}) then w.cdirty = true end
+  end
+  local function drag(ev)
+    local d = I.drag
+    local w = d.w
+    if d.k == "move" then
+      local wx, wy, ww, wh = W.work()
+      local fw, fh = W.fsize(w)
+      local nx, ny = ev.x - d.ox, ev.y - d.oy
+      if math.abs(nx - wx) < 10 then nx = wx elseif math.abs(nx + fw - wx - ww) < 10 then nx = wx + ww - fw end
+      if math.abs(ny - wy) < 10 then ny = wy elseif math.abs(ny + fh - wy - wh) < 10 then ny = wy + wh - fh end
+      W.move(w, nx, math.max(0, ny))
+    else
+      local dx, dy = ev.x - d.x0, ev.y - d.y0
+      local ncw, nch = d.cw + d.e[1] * dx, d.ch + d.e[2] * dy
+      if d.e[1] == 0 then ncw = d.cw end
+      if d.e[2] == 0 then nch = d.ch end
+      W.resize(w, ncw, nch)
+      W.move(w, d.e[1] < 0 and d.fx + d.cw - w.cw or d.fx, d.e[2] < 0 and d.fy + d.ch - w.ch or d.fy)
+    end
+  end
+  function I.mouse(ev)
+    W.cursor_move(ev.x, ev.y)
+    if W.grab and W.grab.mouse and W.grab:mouse(ev) then return end
+    if I.drag then
+      if ev.up ~= 0 or ev.btn == 0 then I.drag = nil I.press = {} else drag(ev) end
+      return
+    end
+    local mods = ev.mods
+    local w, ctx = W.pick(ev.x, ev.y)
+    local c = {w = w, ev = ev, ctx = ctx}
+    if (ev.dx ~= 0 or ev.dy ~= 0) then
+      if W.cfg.focus.model == "follow" and w and not w.kind and w ~= W.focus then if W.cfg.focus.raise then W.raise(w) end W.focus_win(w) end
+      for b, p in pairs(I.press) do
+        if not p.drag and (math.abs(ev.x - p.x) > 3 or math.abs(ev.y - p.y) > 3) then
+          p.drag = true
+          fire(names(p.w, p.ctx), "Drag", b, p.mods, {w = p.w, ev = p, ctx = p.ctx})
+        end
+      end
+      if I.drag then drag(ev) return end
+      local t = I.cap or (ctx == "Client" and w)
+      if t then client(t, ev, "move", 0) end
+    end
+    for _, b in ipairs(BITS) do
+      if ev.down & b ~= 0 then
+        local fo = W.focus
+        if fo and fo.kind == "overlay" and w ~= fo then W.close(fo) w, ctx = W.pick(ev.x, ev.y) c.w, c.ctx = w, ctx end
+        if w and W.cfg.focus.model ~= "none" and not w.nofocus then
+          if W.cfg.focus.raise or ctx ~= "Client" then W.raise(w) end
+          if not w.kind or w.kind == "overlay" then W.focus_win(w) end
+        end
+        I.press[b] = {x = ev.x, y = ev.y, w = w, ctx = ctx, mods = mods, drag = false}
+        local used = fire(names(w, ctx), "Press", b, mods, c)
+        if w and ctx == "Client" and not used then I.cap = w client(w, ev, "down", b) end
+      elseif ev.up & b ~= 0 then
+        local p = I.press[b]
+        I.press[b] = nil
+        if p and not p.drag then
+          fire(names(p.w, p.ctx), "Click", b, p.mods, {w = p.w, ev = ev, ctx = p.ctx})
+          local l, now = I.last, os.ms()
+          if l and l.b == b and l.ctx == p.ctx and l.w == p.w and now - l.t < 400 and math.abs(l.x - ev.x) < 6 and math.abs(l.y - ev.y) < 6 then
+            fire(names(p.w, p.ctx), "DoubleClick", b, p.mods, {w = p.w, ev = ev, ctx = p.ctx})
+            I.last = nil
+          else I.last = {b = b, ctx = p.ctx, w = p.w, t = now, x = ev.x, y = ev.y} end
+        end
+        fire(names(w, ctx), "Release", b, mods, c)
+        if I.cap then client(I.cap, ev, "up", b) I.cap = nil end
+      end
+    end
+    if ev.wheel ~= 0 then
+      local b = ev.wheel * W.cfg.wheel > 0 and "up" or "down"
+      if not fire(names(w, ctx), "Press", b, mods, c) and w and ctx == "Client" then client(w, ev, "wheel", 0) end
+    end
+  end
+end
+
+@@ cwm-menu 5452
+--lua
+-- cwm-menu - Openbox-style menus from /etc/cravgwm/menu.xml (module of cravgwm)
+return function(W)
+  local U, M = W.u, {}
+  W.menu = M
+  local defs
+  local n = 0
+  local function scan(node)                    -- id -> <menu>; вложенные меню получают собственные id
+    for _, c in ipairs(node.k) do
+      if c.tag == "menu" then
+        if not c.a.id then n = n + 1 c.a.id = "menu-" .. n end
+        if #c.k > 0 then defs[c.a.id] = c scan(c) end
+      end
+    end
+  end
+  local function tolist(id, ctx)
+    local l = {}
+    if id == "client-list-menu" then
+      for _, w in ipairs(W.wins) do
+        if not w.kind then l[#l + 1] = {label = (w.icon and "[" or "") .. w.title .. (w.icon and "]" or ""), fn = function() if w.icon then W.restore(w) else W.raise(w) W.focus_win(w) end if w.desk ~= 0 then W.goto(w.desk) end end} end
+      end
+      return l
+    elseif id == "client-menu" then
+      local w = ctx.w
+      local function a(name, to) return function() W.do_acts({{name = name, a = {to = to}}}, {w = w}) end end
+      return {{label = "Maximize / Restore", fn = a("ToggleMaximize")}, {label = "Iconify", fn = a("Iconify")}, {label = "Shade", fn = a("ToggleShade")},
+        {label = "Always on top", fn = a("ToggleAlwaysOnTop")}, {label = "All desktops", fn = a("ToggleOmnipresent")}, {sep = true}, {label = "Close", fn = a("Close")}}
+    end
+    local node = defs[id]
+    if not node then l[1] = {label = "(no menu " .. id .. ")"} return l end
+    for _, c in ipairs(node.k) do
+      if c.tag == "item" then l[#l + 1] = {label = c.a.label or "?", acts = W.conf.acts(c)}
+      elseif c.tag == "separator" then l[#l + 1] = {sep = true}
+      elseif c.tag == "menu" then l[#l + 1] = {label = (c.a.label or c.a.id) .. "  >", sub = c.a.id} end
+    end
+    return l
+  end
+  local function size(lv)
+    local m = W.cfg.theme.menu
+    local mw = 0
+    for _, it in ipairs(lv.items) do if it.label then mw = math.max(mw, #it.label) end end
+    lv.w, lv.h = mw * 8 * m.sc + 28, #lv.items * 18 * m.sc + 4
+  end
+  local function close()
+    local o = M.obj
+    if not o then return end
+    W.grab = nil M.obj = nil
+    for _, lv in ipairs(o.lv) do W.damage(lv.x - 2, lv.y - 2, lv.w + 8, lv.h + 8) end
+  end
+  local function open(o, id, x, y)
+    local lv = {items = tolist(id, o.ctx), sel = 0}
+    size(lv)
+    lv.x, lv.y = U.clamp(x, 0, W.sw - lv.w), U.clamp(y, 0, W.sh - lv.h)
+    o.lv[#o.lv + 1] = lv
+    W.damage(lv.x - 2, lv.y - 2, lv.w + 8, lv.h + 8)
+  end
+  local function trim(o, depth) while #o.lv > depth do local lv = table.remove(o.lv) W.damage(lv.x - 2, lv.y - 2, lv.w + 8, lv.h + 8) end end
+  local function activate(o, it)
+    if it.sub then return end
+    close()
+    if it.fn then it.fn() elseif it.acts then W.do_acts(it.acts, o.ctx) end
+  end
+  local function at(lv, px, py)
+    local m = W.cfg.theme.menu
+    if not U.inside(px, py, lv.x, lv.y, lv.w, lv.h) then return nil end
+    return (py - lv.y - 2) // (18 * m.sc) + 1
+  end
+  function M.show(id, ctx)
+    if not defs then
+      defs = {}
+      local root, err = W.xml.load(W.cfg.menu)
+      if root then scan(root) else W.log("menu: " .. err) end
+    end
+    if M.obj then close() end
+    local o = {lv = {}, ctx = {w = ctx.w, ev = ctx.ev}}
+    local ev = ctx.ev
+    open(o, id, ev and ev.x or W.mx, ev and ev.y or W.my)
+    M.obj = o
+    W.grab = o
+    function o:paint()
+      local m = W.cfg.theme.menu
+      for _, lv in ipairs(self.lv) do
+        gfx.shadow(lv.x, lv.y, lv.w, lv.h, 6, 90, 0, 0)
+        gfx.fill(lv.x, lv.y, lv.w, lv.h, m.bd) gfx.fill(lv.x + 1, lv.y + 1, lv.w - 2, lv.h - 2, m.bg)
+        for i, it in ipairs(lv.items) do
+          local y = lv.y + 2 + (i - 1) * 18 * m.sc
+          if it.sep then gfx.fill(lv.x + 4, y + 8 * m.sc, lv.w - 8, 1, m.bd)
+          else
+            if lv.sel == i then gfx.fill(lv.x + 2, y, lv.w - 4, 18 * m.sc, m.sel) end
+            gfx.text(lv.x + 10, y + 1, it.label, lv.sel == i and m.selfg or m.fg, m.sc)
+          end
+        end
+      end
+    end
+    function o:mouse(ev)
+      for d = #self.lv, 1, -1 do
+        local lv = self.lv[d]
+        local i = at(lv, ev.x, ev.y)
+        if i and lv.items[i] then
+          local it = lv.items[i]
+          if not it.sep and lv.sel ~= i then
+            lv.sel = i
+            trim(self, d)
+            if it.sub then open(self, it.sub, lv.x + lv.w - 4, lv.y + 2 + (i - 1) * 18 * W.cfg.theme.menu.sc) end
+            W.damage(lv.x, lv.y, lv.w, lv.h)
+          end
+          if ev.down & 1 ~= 0 and not it.sep then activate(self, it) end
+          return true
+        end
+      end
+      if ev.down ~= 0 then close() return true end
+      return true
+    end
+    function o:key(ev)
+      local lv = self.lv[#self.lv]
+      local k, c = ev.key, #lv.items
+      if k == 27 then close() return true end
+      if k == term.UP or k == term.DOWN then
+        local d, i = k == term.DOWN and 1 or -1, lv.sel
+        for _ = 1, c do i = (i - 1 + d) % c + 1 if not lv.items[i].sep then break end end
+        lv.sel = i W.damage(lv.x, lv.y, lv.w, lv.h)
+      elseif k == term.RIGHT or k == 10 then
+        local it = lv.items[lv.sel]
+        if it and it.sub then open(self, it.sub, lv.x + lv.w - 4, lv.y + 2 + (lv.sel - 1) * 18 * W.cfg.theme.menu.sc) self.lv[#self.lv].sel = 1
+        elseif it and k == 10 then activate(self, it) end
+      elseif k == term.LEFT and #self.lv > 1 then trim(self, #self.lv - 1) end
+      return true
+    end
+  end
+end
+
+@@ cwm-paint 3002
+--lua
+-- cwm-paint - drawing: damage, background, windows, overlays, cursor (module of cravgwm)
+return function(W)
+  local U = W.u
+  W.logs = {}
+  W.mx, W.my = 0, 0
+  function W.damage(x, y, w, h)
+    local x1, y1 = U.clamp(x, 0, W.sw), U.clamp(y, 0, W.sh)
+    local x2, y2 = U.clamp(x + w, 0, W.sw), U.clamp(y + h, 0, W.sh)
+    if x2 <= x1 or y2 <= y1 then return end
+    if not W.dx then W.dx, W.dy, W.dx2, W.dy2 = x1, y1, x2, y2 return end
+    W.dx, W.dy, W.dx2, W.dy2 = math.min(W.dx, x1), math.min(W.dy, y1), math.max(W.dx2, x2), math.max(W.dy2, y2)
+  end
+  function W.log(msg)
+    W.logs[#W.logs + 1] = {msg, os.ms()}
+    if #W.logs > 4 then table.remove(W.logs, 1) end
+    if W.sw then W.damage(0, 0, W.sw, 16 * 5 + 8) end
+  end
+  local ARROW = {"X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X", "X......X", "X.......X", "X........X", "X.....XXXXX", "X..X..X",
+    "X.X X..X", "XX  X..X", "X    X..X", "     X..X", "      X..X", "      X..X", "       XX"}
+  function W.mkcursor()
+    W.cur = gfx.surface(12, 19)
+    gfx.target(W.cur)
+    for y, row in ipairs(ARROW) do
+      for x = 1, #row do
+        local c = row:sub(x, x)
+        if c == "X" then gfx.raw(x - 1, y - 1, 1, 1, 0xFF000000) elseif c == "." then gfx.raw(x - 1, y - 1, 1, 1, 0xFFFFFFFF) end
+      end
+    end
+    gfx.target(0)
+  end
+  function W.cursor_move(x, y)
+    if x == W.mx and y == W.my then return end
+    W.damage(W.mx, W.my, 12, 19)
+    W.mx, W.my = x, y
+    W.damage(x, y, 12, 19)
+  end
+  function W.render()
+    for _, w in ipairs(W.wins) do
+      if W.visible(w) and (w.cdirty or w.fdirty) then
+        if w.cdirty and w.c.draw and not w.shade then gfx.target(w.cs) gfx.clip() w.c:draw(w.cs, w.cw, w.ch) gfx.target(0) end
+        w.cdirty = false
+        if w.fs and w.cs then W.deco.draw(w) if W.comp then W.comp.after_draw(w) end end
+        w.fdirty = false
+        local x, y, fw, fh = W.frect(w)
+        W.damage(x, y, fw, fh)
+      end
+    end
+    if W.comp and W.comp.pending() then W.comp.step() end
+    if not W.dx then return end
+    local x, y, w, h = W.dx, W.dy, W.dx2 - W.dx, W.dy2 - W.dy
+    W.dx = nil
+    gfx.target(0)
+    gfx.clip(x, y, w, h)
+    gfx.fill(0, 0, W.sw, W.sh, W.cfg.theme.root)
+    for _, win in ipairs(W.wins) do
+      if W.visible(win) and win.fs then
+        local fx, fy, fw, fh = W.frect(win)
+        if win.kind == "desktop" or U.inside(fx + fw // 2, fy + fh // 2, x - fw // 2 - 60, y - fh // 2 - 60, w + fw + 120, h + fh + 120) then
+          if W.comp then W.comp.paint(win) else gfx.blit(win.fs, win.x, win.y) end
+        end
+      end
+    end
+    if W.comp then W.comp.ghosts() end
+    if W.grab and W.grab.paint then W.grab:paint() end
+    local now, ly = os.ms(), 0
+    for _, l in ipairs(W.logs) do
+      if now - l[2] < 15000 then
+        gfx.fill(0, ly, #l[1] * 8 + 8, 16, 0x400000, 220) gfx.text(4, ly, l[1], 0xFF8080)
+        ly = ly + 16
+      end
+    end
+    if W.cur then gfx.blit(W.cur, W.mx, W.my, 255) end
+    gfx.clip()
+    gfx.flip(x, y, w, h)
+  end
+end
+
+@@ cwm-ui 1769
+--lua
+-- cwm-ui - helpers for programs: line editor, config loading (module of cravgwm)
+return function(W)
+  local UI = {}
+  W.ui = UI
+  function UI.input(t) t = t or "" return {t = t, p = #t} end
+  -- editing keys; returns true if the text or the cursor changed
+  function UI.edit(e, k, m)
+    local t, p = e.t, e.p
+    if k == 8 then if p > 0 then e.t, e.p = t:sub(1, p - 1) .. t:sub(p + 1), p - 1 return true end
+    elseif k == term.DEL then if p < #t then e.t = t:sub(1, p) .. t:sub(p + 2) return true end
+    elseif k == term.LEFT then e.p = math.max(0, p - 1) return true
+    elseif k == term.RIGHT then e.p = math.min(#t, p + 1) return true
+    elseif k == term.HOME then e.p = 0 return true
+    elseif k == term.END then e.p = #t return true
+    elseif k >= 32 and k < 256 and (m or 0) & 6 == 0 then e.t, e.p = t:sub(1, p) .. string.char(k) .. t:sub(p + 1), p + 1 return true end
+    return false
+  end
+  -- text of the editor with a cursor at (x, y); width w in pixels
+  function UI.draw_input(e, x, y, w, fg, scale)
+    scale = scale or 1
+    local cols = w // (8 * scale)
+    local from = math.max(0, e.p - cols + 1)
+    gfx.text(x, y, e.t:sub(from + 1, from + cols), fg, scale)
+    if (os.ms() // 500) % 2 == 0 then gfx.fill(x + (e.p - from) * 8 * scale, y + 14 * scale, 8 * scale, 2 * scale, fg) end
+  end
+  -- loads /etc/cravgwm/<name>.xml; on error writes to the WM log
+  function UI.config(name)
+    local root, err = W.xml.load("/etc/cravgwm/" .. name .. ".xml")
+    if not root then W.log(name .. ": " .. err) end
+    return root
+  end
+  function UI.color(s, d) return W.u.color(s, d) end
+  function UI.num(s, d) return W.u.num(s, d) end
+  function UI.box(x, y, w, h, bg, bd) gfx.fill(x, y, w, h, bd) gfx.fill(x + 1, y + 1, w - 2, h - 2, bg) end
+end
+
+@@ cwm-util 3382
+--lua
+-- cwm-util - helpers: colors, strings, geometry, clock (module of cravgwm)
+return function(W)
+  local U = {}
+  W.u = U
+  local N = {black = 0, white = 0xFFFFFF, red = 0xFF0000, green = 0x008000, lime = 0x00FF00, blue = 0x0000FF, yellow = 0xFFFF00,
+    cyan = 0x00FFFF, magenta = 0xFF00FF, gray = 0x808080, grey = 0x808080, silver = 0xC0C0C0, orange = 0xFFA500,
+    navy = 0x000080, teal = 0x008080, purple = 0x800080, maroon = 0x800000, olive = 0x808000}
+  local function hex(s)
+    local v = 0
+    for i = 1, #s do
+      local c = s:byte(i)
+      c = c >= 97 and c - 87 or c >= 65 and c - 55 or c - 48
+      if c < 0 or c > 15 then return nil end
+      v = v * 16 + c
+    end
+    return v
+  end
+  -- "#rrggbb", "#rgb", "0xRRGGBB", color names or a number
+  function U.color(s, def)
+    if type(s) == "number" then return s end
+    if not s then return def end
+    s = s:lower()
+    if N[s] then return N[s] end
+    if s:sub(1, 1) == "#" then s = s:sub(2) elseif s:sub(1, 2) == "0x" then s = s:sub(3) end
+    local v = hex(s)
+    if not v then return def end
+    if #s == 3 then return (v // 256 * 17) * 65536 + (v // 16 % 16 * 17) * 256 + v % 16 * 17 end
+    if #s == 6 then return v end
+    return def
+  end
+  function U.num(s, def) return tonumber(s) or def end
+  function U.bool(s, def)
+    if s == nil then return def end
+    s = tostring(s):lower()
+    if s == "yes" or s == "true" or s == "1" or s == "on" then return true end
+    if s == "no" or s == "false" or s == "0" or s == "off" then return false end
+    return def
+  end
+  function U.trim(s)
+    local a, b = 1, #s
+    while a <= b and s:byte(a) <= 32 do a = a + 1 end
+    while b >= a and s:byte(b) <= 32 do b = b - 1 end
+    return s:sub(a, b)
+  end
+  function U.split(s, sep)
+    local r, i = {}, 1
+    while true do
+      local j = s:find(sep, i, true)
+      if not j then r[#r + 1] = s:sub(i) return r end
+      r[#r + 1] = s:sub(i, j - 1)
+      i = j + #sep
+    end
+  end
+  function U.has(t, v) for _, x in ipairs(t) do if x == v then return true end end return false end
+  function U.clamp(v, lo, hi) if v < lo then return lo end if v > hi then return hi end return v end
+  function U.inside(px, py, x, y, w, h) return px >= x and py >= y and px < x + w and py < y + h end
+  -- cut a string to a pixel width (8 px per character, scale 1..)
+  function U.fit(s, w, scale)
+    local n = w // (8 * (scale or 1))
+    if #s <= n then return s end
+    if n < 2 then return "" end
+    return s:sub(1, n - 1) .. "~"
+  end
+  local DN = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+  local MN = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+  local function p2(v) return string.format("%02d", v) end
+  -- %H %M %S %d %m %Y %y %a %b %%
+  function U.clock(fmt)
+    local d, out, i = os.date(), {}, 1
+    while i <= #fmt do
+      local c = fmt:sub(i, i)
+      if c == "%" and i < #fmt then
+        i = i + 1
+        local k = fmt:sub(i, i)
+        local v = k == "H" and p2(d.hour) or k == "M" and p2(d.min) or k == "S" and p2(d.sec) or k == "d" and p2(d.day)
+          or k == "m" and p2(d.month) or k == "Y" and d.year or k == "y" and p2(d.year % 100) or k == "a" and DN[d.wday]
+          or k == "b" and MN[d.month] or k == "%" and "%" or "%" .. k
+        out[#out + 1] = v
+      else out[#out + 1] = c end
+      i = i + 1
+    end
+    return table.concat(out)
+  end
+end
+
+@@ cwm-win 5587
+--lua
+-- cwm-win - window model: list, stacking, focus, geometry (module of cravgwm)
+return function(W)
+  local U = W.u
+  W.wins, W.mru, W.desk = {}, {}, 1
+  local seq = 0
+  local LAYER = {desktop = 0, below = 1, normal = 2, above = 3, dock = 4, overlay = 5}
+  function W.mets(w)                         -- рамка: толщина, высота заголовка
+    if w.nodecor or w.full or w.kind then return 0, 0 end
+    return W.cfg.theme.border, W.cfg.theme.title
+  end
+  function W.fsize(w)
+    local b, t = W.mets(w)
+    return w.cw + 2 * b, (w.shade and 0 or w.ch) + t + 2 * b
+  end
+  function W.visible(w) return not w.icon and (w.desk == 0 or w.desk == W.desk) end
+  function W.frect(w) local fw, fh = W.fsize(w) return w.x, w.y, fw, fh end
+  function W.dmg(w) local x, y, fw, fh = W.frect(w) W.damage(x - 40, y - 40, fw + 80, fh + 100) end   -- запас под тень
+  local function relayer(w)
+    for i, v in ipairs(W.wins) do if v == w then table.remove(W.wins, i) break end end
+    local at = #W.wins + 1
+    for i, v in ipairs(W.wins) do if v.layer > w.layer then at = i break end end
+    table.insert(W.wins, at, w)
+  end
+  function W.raise(w) relayer(w) W.dmg(w) end
+  function W.lower(w)
+    for i, v in ipairs(W.wins) do if v == w then table.remove(W.wins, i) break end end
+    local at = 1
+    for i, v in ipairs(W.wins) do if v.layer < w.layer then at = i + 1 end end
+    table.insert(W.wins, at, w)
+    W.dmg(w)
+  end
+  local function surfaces(w)
+    local fw, fh = W.fsize(w)
+    if w.cs then gfx.free(w.cs) end
+    if w.fs then gfx.free(w.fs) end
+    w.cs = gfx.surface(w.cw, w.ch)
+    w.fs = gfx.surface(fw, fh)
+    w.cdirty, w.fdirty = true, true
+    if not w.cs or not w.fs then W.log("out of memory for window surfaces") end
+  end
+  W.surfaces = surfaces
+  W.relayer = relayer
+  function W.work()                          -- рабочая область без панелей
+    local x, y, r, b = 0, 0, W.sw, W.sh
+    for _, w in ipairs(W.wins) do
+      if w.strut and W.visible(w) then
+        if w.strut.edge == "top" then y = math.max(y, w.y + w.strut.size) elseif w.strut.edge == "bottom" then b = math.min(b, w.y)
+        elseif w.strut.edge == "left" then x = math.max(x, w.x + w.strut.size) else r = math.min(r, w.x) end
+      end
+    end
+    return x, y, r - x, b - y
+  end
+  local function rule(w)
+    for _, r in ipairs(W.cfg.rules) do
+      if r.class == "*" or r.class == w.class then
+        if r.desktop then w.desk = tonumber(r.desktop) or w.desk end
+        if r.decor then w.nodecor = not U.bool(r.decor, true) end
+        if r["position.x"] then w.px, w.py = tonumber(r["position.x"]), tonumber(r["position.y"]) end
+        if r["size.w"] then w.cw, w.ch = tonumber(r["size.w"]), tonumber(r["size.h"]) or w.ch end
+        if r.maximized then w.wantmax = U.bool(r.maximized, false) end
+        if r.layer then w.layer = LAYER[r.layer] or w.layer end
+        if r.focus then w.nofocus = not U.bool(r.focus, true) end
+        if r.alpha then w.alpha = tonumber(r.alpha) end
+        if r.omnipresent then if U.bool(r.omnipresent, false) then w.desk = 0 end end
+      end
+    end
+  end
+  -- c - клиентский объект приложения (title, w, h, kind...), возвращает окно
+  function W.add(c)
+    seq = seq + 1
+    local w = {id = seq, c = c, title = c.title or "?", class = c.class or "", kind = c.kind, x = 0, y = 0, cw = c.w or 400, ch = c.h or 300, desk = W.desk, layer = LAYER.normal}
+    if c.kind == "dock" then w.layer, w.desk, w.strut = LAYER.dock, 0, {edge = c.edge or "bottom", size = c.size or 28}
+    elseif c.kind == "desktop" then w.layer, w.desk = LAYER.desktop, 0
+    elseif c.kind == "overlay" then w.layer = LAYER.overlay end
+    c.win = w
+    if c.px then w.px, w.py = c.px, c.py end
+    rule(w)
+    w.cw, w.ch = U.clamp(w.cw, c.minw or 80, W.sw), U.clamp(w.ch, c.minh or 40, W.sh)
+    if w.kind == "dock" then
+      local e = w.strut.edge
+      if e == "top" or e == "bottom" then w.cw, w.ch = W.sw, w.strut.size else w.cw, w.ch = w.strut.size, W.sh end
+      w.x = e == "right" and W.sw - w.cw or 0
+      w.y = e == "bottom" and W.sh - w.ch or 0
+    elseif w.kind == "desktop" then w.cw, w.ch = W.sw, W.sh
+    else
+      local wx, wy, ww, wh = W.work()
+      local fw, fh = W.fsize(w)
+      if w.px then w.x, w.y = w.px, w.py
+      elseif W.cfg.place == "cascade" then local n = #W.wins % 8 w.x, w.y = wx + 30 + n * 26, wy + 30 + n * 26
+      elseif W.cfg.place == "mouse" then local mx, my = gfx.mouse() w.x, w.y = mx - fw // 2, my - 10
+      else w.x, w.y = wx + (ww - fw) // 2, wy + (wh - fh) // 2 end
+      w.x, w.y = U.clamp(w.x, 0, math.max(0, W.sw - fw)), U.clamp(w.y, wy, math.max(wy, W.sh - fh))
+    end
+    surfaces(w)
+    relayer(w)
+    if w.kind == "overlay" or w.kind == "dock" or w.kind == "desktop" then
+      if c.start then c:start(w) end
+      if w.kind == "overlay" then W.focus_win(w) end
+    else
+      if w.wantmax then W.maximize(w, true) end
+      if not w.nofocus then W.focus_win(w) end
+    end
+    if c.kind == "desktop" then W.damage(0, 0, W.sw, W.sh) else W.dmg(w) end
+    if W.comp then W.comp.opened(w) end
+    return w
+  end
+  function W.focus_win(w)
+    local old = W.focus
+    if old == w then return end
+    W.focus = w
+    if old then old.fdirty = true if old.c.focus then old.c:focus(false) end W.dmg(old) end
+    if w then
+      for i, v in ipairs(W.mru) do if v == w then table.remove(W.mru, i) break end end
+      table.insert(W.mru, 1, w)
+      w.fdirty = true
+      if w.c.focus then w.c:focus(true) end
+      W.dmg(w)
+    end
+  end
+end
+
+@@ cwm-wops 3941
+--lua
+-- cwm-wops - window operations: resize, maximize, iconify, close, desktops (module of cravgwm)
+return function(W)
+  local U = W.u
+  local surfaces = W.surfaces
+  function W.move(w, x, y) W.dmg(w) w.x, w.y = x, y W.dmg(w) end
+  function W.resize(w, cw, ch)
+    cw, ch = U.clamp(cw, w.c.minw or 80, W.sw * 2), U.clamp(ch, w.c.minh or 40, W.sh * 2)
+    if cw == w.cw and ch == w.ch then return end
+    W.dmg(w)
+    w.cw, w.ch = cw, ch
+    surfaces(w)
+    if w.c.resize then w.c:resize(cw, ch) end
+    W.dmg(w)
+  end
+  function W.maximize(w, on)
+    if w.kind then return end
+    if on and not w.max then
+      w.rest = {w.x, w.y, w.cw, w.ch}
+      w.max = true
+      local x, y, ww, wh = W.work()
+      local b, t = W.mets(w)
+      W.dmg(w)
+      w.x, w.y = x, y
+      W.resize(w, ww - 2 * b, wh - t - 2 * b)
+      w.fdirty = true
+      W.dmg(w)
+    elseif not on and w.max then
+      w.max = false
+      W.dmg(w)
+      local r = w.rest
+      w.x, w.y = r[1], r[2]
+      W.resize(w, r[3], r[4])
+      w.fdirty = true
+      W.dmg(w)
+    end
+  end
+  function W.iconify(w)
+    if w.kind then return end
+    W.dmg(w) w.icon = true
+    if W.focus == w then W.focus = nil W.next_focus() end
+  end
+  function W.restore(w) w.icon = false w.fdirty = true W.raise(w) W.focus_win(w) end
+  function W.shade(w, on) if w.kind or w.shade == on then return end W.dmg(w) w.shade = on surfaces(w) W.dmg(w) end
+  function W.fullscreen(w, on)
+    if w.kind or (w.full or false) == on then return end
+    W.dmg(w)
+    if on then w.frest = {w.x, w.y, w.cw, w.ch} w.full = true w.x, w.y = 0, 0 W.resize(w, W.sw, W.sh)
+    else w.full = false local r = w.frest w.x, w.y = r[1], r[2] W.resize(w, r[3], r[4]) end
+    surfaces(w) W.dmg(w) W.damage(0, 0, W.sw, W.sh)
+  end
+  function W.nodecor(w, on) if w.kind then return end W.dmg(w) local ox, oy = w.x, w.y w.nodecor = on surfaces(w) W.dmg(w) end
+  function W.next_focus()                    -- сфокусировать верхнее видимое обычное окно
+    for i = #W.wins, 1, -1 do
+      local w = W.wins[i]
+      if not w.kind and W.visible(w) and not w.nofocus then W.focus_win(w) return end
+    end
+    W.focus_win(nil)
+  end
+  function W.close(w)
+    if w.c.close and w.c:close() == false then return end
+    if W.focus == w then W.focus = nil end
+    for i, v in ipairs(W.wins) do if v == w then table.remove(W.wins, i) break end end
+    for i, v in ipairs(W.mru) do if v == w then table.remove(W.mru, i) break end end
+    W.dmg(w)
+    if w.kind == "desktop" then W.damage(0, 0, W.sw, W.sh) end
+    if W.comp and W.comp.closed(w) then w.fs = nil else if w.fs then gfx.free(w.fs) end end
+    if w.cs then gfx.free(w.cs) end
+    if not W.focus then W.next_focus() end
+  end
+  function W.goto(n)
+    n = U.clamp(n, 1, W.cfg.desktops)
+    if n == W.desk then return end
+    W.desk = n
+    W.damage(0, 0, W.sw, W.sh)
+    if W.focus and not W.visible(W.focus) then W.focus = nil end
+    if not W.focus then W.next_focus() end
+  end
+  function W.send(w, n) if w.kind then return end w.desk = U.clamp(n, 1, W.cfg.desktops) W.damage(0, 0, W.sw, W.sh) if not W.visible(w) then if W.focus == w then W.focus = nil W.next_focus() end end end
+  function W.cycle(dir)                      -- Alt+Tab по порядку использования
+    local list = {}
+    for _, w in ipairs(W.mru) do if W.visible(w) and not w.kind then list[#list + 1] = w end end
+    if #list < 2 then return end
+    local nw = dir > 0 and list[2] or list[#list]
+    W.raise(nw) W.focus_win(nw)
+  end
+  function W.pick(px, py)                    -- окно под точкой и часть окна
+    for i = #W.wins, 1, -1 do
+      local w = W.wins[i]
+      if W.visible(w) and w.kind ~= "desktop" then
+        local x, y, fw, fh = W.frect(w)
+        if U.inside(px, py, x, y, fw, fh) then return w, W.deco.hit(w, px - x, py - y), px - x, py - y end
+      end
+    end
+    return nil, "Root", px, py
+  end
+end
+
+@@ cwm-xml 4075
+--lua
+-- cwm-xml - XML parser (module of cravgwm)
+return function(W)
+  local X, U = {}, W.u
+  W.xml = X
+  local Node = {}
+  Node.__index = Node
+  function Node.child(n, tag) for _, c in ipairs(n.k) do if c.tag == tag then return c end end end
+  function Node.list(n, tag)
+    local r = {}
+    for _, c in ipairs(n.k) do if not tag or c.tag == tag then r[#r + 1] = c end end
+    return r
+  end
+  function Node.get(n, name, def) local v = n.a[name] if v == nil then return def end return v end
+  local function unesc(s)
+    if not s:find("&", 1, true) then return s end
+    local out, i = {}, 1
+    while i <= #s do
+      local c, e = s:sub(i, i), nil
+      if c == "&" then e = s:find(";", i, true) end
+      local ent = e and s:sub(i, e)
+      local m = ent == "&lt;" and "<" or ent == "&gt;" and ">" or ent == "&amp;" and "&" or ent == "&quot;" and '"' or ent == "&apos;" and "'"
+      if m then out[#out + 1] = m i = e + 1 else out[#out + 1] = c i = i + 1 end
+    end
+    return table.concat(out)
+  end
+  local function lineno(src, p)
+    local n, i = 1, 1
+    while true do
+      local j = src:find("\n", i, true)
+      if not j or j >= p then return n end
+      n, i = n + 1, j + 1
+    end
+  end
+  local function sp(src, i) while i <= #src and src:byte(i) <= 32 do i = i + 1 end return i end
+  function X.parse(src)
+    local root = setmetatable({tag = "#root", a = {}, k = {}, t = ""}, Node)
+    local stack, cur, p, n = {root}, root, 1, #src
+    local function fail(msg) return nil, "line " .. lineno(src, p) .. ": " .. msg end
+    while p <= n do
+      local lt = src:find("<", p, true)
+      local txt = U.trim(src:sub(p, (lt or n + 1) - 1))
+      if #txt > 0 then
+        if cur == root then return fail("text outside of elements") end
+        cur.t = cur.t .. unesc(txt)
+      end
+      if not lt then break end
+      p = lt
+      local skip = src:sub(p, p + 3) == "<!--" and "-->" or src:sub(p, p + 1) == "<?" and "?>"
+      if skip then
+        local e = src:find(skip, p + 2, true)
+        if not e then return fail("unclosed comment") end
+        p = e + #skip
+      elseif src:sub(p, p + 1) == "</" then
+        local e = src:find(">", p, true)
+        if not e then return fail("'>' expected") end
+        local tag = U.trim(src:sub(p + 2, e - 1))
+        if #stack < 2 or cur.tag ~= tag then return fail("unexpected </" .. tag .. ">") end
+        stack[#stack] = nil
+        cur = stack[#stack]
+        p = e + 1
+      else
+        local i, s = p + 1, p + 1
+        while i <= n do local c = src:byte(i) if c <= 32 or c == 47 or c == 62 then break end i = i + 1 end
+        local tag = src:sub(s, i - 1)
+        if #tag == 0 then return fail("tag name expected") end
+        local node = setmetatable({tag = tag, a = {}, k = {}, t = ""}, Node)
+        while true do
+          i = sp(src, i)
+          local c = src:sub(i, i)
+          if c == "" then return fail("tag <" .. tag .. "> is not closed") end
+          if c == ">" or c == "/" then break end
+          local s2 = i
+          while i <= n do local b = src:byte(i) if b <= 32 or b == 61 or b == 62 or b == 47 then break end i = i + 1 end
+          local name = src:sub(s2, i - 1)
+          i = sp(src, i)
+          if src:sub(i, i) ~= "=" then return fail("'=' expected after " .. name) end
+          i = sp(src, i + 1)
+          local q = src:sub(i, i)
+          if q ~= '"' and q ~= "'" then return fail("quoted value expected") end
+          local e = src:find(q, i + 1, true)
+          if not e then return fail("unclosed attribute value") end
+          node.a[name] = unesc(src:sub(i + 1, e - 1))
+          i = e + 1
+        end
+        cur.k[#cur.k + 1] = node
+        if src:sub(i, i) == "/" then
+          if src:sub(i + 1, i + 1) ~= ">" then return fail("'>' expected") end
+          p = i + 2
+        else
+          stack[#stack + 1] = node
+          cur = node
+          p = i + 1
+        end
+      end
+    end
+    if #stack > 1 then return fail("<" .. cur.tag .. "> is not closed") end
+    if #root.k ~= 1 then return fail("one root element expected") end
+    return root.k[1]
+  end
+end
+
+@@ cwm-xmlf 1016
+--lua
+-- cwm-xmlf - load XML files with <include href="..."/> (module of cravgwm)
+return function(W)
+  local X = W.xml
+  local function expand(n, depth)
+    local i = 1
+    while i <= #n.k do
+      local c = n.k[i]
+      if c.tag == "include" then
+        if depth >= 4 then return nil, "includes are nested too deeply" end
+        local inc, err = X.load(c.a.href or "", depth + 1)
+        if not inc then return nil, err end
+        table.remove(n.k, i)
+        for j, kid in ipairs(inc.k) do table.insert(n.k, i + j - 1, kid) end
+        i = i + #inc.k
+      else
+        local ok, err = expand(c, depth)
+        if not ok then return nil, err end
+        i = i + 1
+      end
+    end
+    return n
+  end
+  -- file -> root node, or nil and an error message
+  function X.load(path, depth)
+    local src = fs.read(path)
+    if not src then return nil, "cannot read " .. path end
+    local root, err = X.parse(src)
+    if not root then return nil, path .. ": " .. err end
+    return expand(root, depth or 0)
+  end
+end
+

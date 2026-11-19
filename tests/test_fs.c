@@ -23,8 +23,8 @@ int main(void) {
     CHECK(fs_write(f, " world", 6, 1) == 6);
     CHECK(fsn[f].size == 11 && memcmp(fsdata[f], "hello world", 11) == 0);
     CHECK(fs_write(f, "x", 1, 0) == 1 && fsn[f].size == 1);   /* перезапись */
-    char big[3000]; memset(big, 'z', sizeof big);
-    CHECK(fs_write(f, big, 3000, 0) == FS_FSZ);                 /* лимит */
+    char big[FS_FSZ + 1000]; memset(big, 'z', sizeof big);
+    CHECK(fs_write(f, big, FS_FSZ + 1000, 0) == FS_FSZ);                 /* лимит */
     fs_path(f, b); CHECK(strcmp(b, "/home/note.txt") == 0);
     fs_path(0, b); CHECK(strcmp(b, "/") == 0);
     /* cp / mv */
@@ -52,10 +52,10 @@ int main(void) {
     CHECK(fs_create("/a/", 0) == FS_EBAD);
     /* заполнение */
     int n = 0; char nm[16];
-    for (int i = 0; i < 100; i++) { sprintf(nm, "/f%d", i); int r = fs_create(nm, 0); if (r > 0) n++; else { CHECK(r == FS_EFULL); break; } }
-    CHECK(n > 0 && n < 64);
+    for (int i = 0; i < FS_MAXN + 40; i++) { sprintf(nm, "/f%d", i); int r = fs_create(nm, 0); if (r > 0) n++; else { CHECK(r == FS_EFULL); break; } }
+    CHECK(n > 0 && n < FS_MAXN);
     int files, dirs, bytes; fs_usage(&files, &dirs, &bytes);
-    CHECK(files + dirs == 63 || files + dirs + 1 == 64);
+    CHECK(files + dirs == FS_MAXN - 1 || files + dirs + 1 == FS_MAXN);
     /* рекурсивные операции и сортировка */
     fs_init();
     fs_create("/src", 1); fs_create("/src/sub", 1); fs_create("/src/a.txt", 0); fs_create("/src/sub/b.txt", 0);

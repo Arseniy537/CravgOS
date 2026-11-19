@@ -128,6 +128,11 @@ int main(void) {
     T("print(1, collectgarbage(), ('a'):rep(3), collectgarbage('count') >= 0)", "1\t0\taaa\ttrue\n");
     T("local function mk(n) local t={} for i=1,n do t[i]=function() return i*n end end return t end local all={} for r=1,20 do all[r]=mk(10) end local s=0 for r=1,20 do s=s+all[r][10]() end print(s)", "2000\n");
     T("local s='' for i=1,2000 do s=('z'):rep(10)..i end print(s, #s)", "zzzzzzzzzz2000\t14\n");
+    /* побитовые операции: приоритеты и сдвиги */
+    T("print(0xFF & 0x0F, 0xF0 | 0x0F, 5 ~ 3, ~0, 1 << 4, 256 >> 4, -1 >> 60, 1 << 64, 1 << -1 == 0, 8 >> -1, 0x12345678 >> 16 & 0xFF)", "15\t255\t6\t-1\t16\t16\t15\t0\ttrue\t16\t52\n");
+    T("print(1 | 2 & 3, 6 & 3 == 2, 1 + 2 << 1, 2 ^ 3 & 1, #'ab' << 2, ~5 & 7, 3 ~= 4)", "3\ttrue\t6\t0\t8\t2\ttrue\n");
+    T("print(pcall(function() return 1 << {} end))", "false\tt:1: attempt to perform arithmetic on a table value\n");
+    T("local c = 0xFFAA5500 print((c >> 24) & 255, (c >> 16) & 255, (c >> 8) & 255, c & 255)", "255\t170\t85\t0\n");
     /* терминал */
     reset(); clear(); { const char *s = "term.put(0,0,'Hi'); term.color(14,1); term.put(79,24,'XYZ'); term.fill(2,2,3,2,'#'); term.at(5,5); term.write('w',1)"; lua_run_src(s, (int)strlen(s), "t"); }
     if (((scr[0] & 255) != 'H') || scr[1] != (0x07 << 8 | 'i') || scr[24 * 80 + 79] != ((1 << 4 | 14) << 8 | 'X') || (scr[2 * 80 + 2] & 255) != '#' || (scr[3 * 80 + 4] & 255) != '#' || cx != 5 || cy != 5 || strcmp(out, "w1")) { printf("FAIL term: %x %x %x cx=%d cy=%d out=[%s]\n", scr[0], scr[1], scr[24 * 80 + 79], cx, cy, out); fails++; }
@@ -145,7 +150,7 @@ int main(void) {
         if (!strstr(out, "interrupted")) { printf("FAIL esc in empty loop: %s -> [%s]\n", loops[q], out); fails++; } } }
     /* нехватка памяти не падает */
     T("local t={} for i=1,1000000 do t[i]=('x'):rep(50)..i end", "lua: t:1: not enough memory\n");
-    T("local s = 'a' for i=1,20 do s = s..s end print(#s)", "lua: t:1: not enough memory\n");
+    T("local s = 'a' for i=1,26 do s = s..s end print(#s)", "lua: t:1: not enough memory\n");
     /* ошибка в чужой функции показывает её строку */
     T("local function f()\n  local x = nil\n  return x.y\nend\nf()", "lua: t:3: attempt to index a nil value\n");
     T("print(('x'):bad())", "lua: t:1: attempt to call a nil value\n");

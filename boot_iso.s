@@ -35,6 +35,20 @@ _start16:
     movw %ax, %ss
     movw $0x7C00, %sp
 
+    # Пиксельный режим по запросу: одноразовый флаг в CMOS (регистр 0x7D = 'W'), его ставит команда wmboot.
+    # Флаг сбрасывается ДО попытки: если что-то пойдёт не так, следующая загрузка снова текстовая.
+    movb $0x7D, %al
+    outb %al, $0x70
+    inb  $0x71, %al
+    cmpb $0x57, %al
+    jne  1f
+    movb $0x7D, %al
+    outb %al, $0x70
+    xorb %al, %al
+    outb %al, $0x71
+    call vbe_setup
+1:
+
     # Включаем A20 (Fast A20 Gate)
     inb  $0x92, %al
     orb  $2, %al
@@ -47,6 +61,126 @@ _start16:
     orl  $1, %eax
     movl %eax, %cr0
     ljmpl $0x08, $pm_entry
+
+# VBE: найти линейный 32-битный режим 1024x768 (иначе 800x600, 640x480), включить его, записать fbinfo
+# и скопировать 8x16 шрифт BIOS (для текстовой консоли поверх пикселей). DS = ES = 0 на входе и на выходе.
+vbe_setup:
+    pushal
+    pushw %fs
+    movw  $0x1130, %ax              # адрес 8x16 ROM-шрифта: ES:BP
+    movb  $6, %bh
+    int   $0x10
+    pushw %ds
+    movw  %es, %ax
+    movw  %ax, %ds
+    movw  %bp, %si
+    xorw  %ax, %ax
+    movw  %ax, %es
+    movw  $romfont, %di
+    movw  $2048, %cx
+    cld
+    rep movsw
+    popw  %ds
+    movw  $vbe_buf, %di             # информация о контроллере
+    movl  $0x32454256, (%di)        # "VBE2"
+    movw  $0x4F00, %ax
+    int   $0x10
+    cmpw  $0x004F, %ax
+    jne   vbe_out
+    cmpl  $0x41534556, vbe_buf      # "VESA"
+    jne   vbe_out
+    movw  vbe_buf + 0x10, %ax       # сегмент списка режимов
+    movw  %ax, vbe_seg
+    movw  vbe_buf + 0x0E, %ax       # смещение списка режимов
+    movw  %ax, vbe_lst
+    movw  $vbe_want, vbe_wp
+vbe_want_loop:
+    movw  vbe_wp, %bx
+    movw  (%bx), %ax
+    testw %ax, %ax
+    jz    vbe_out                   # кандидаты кончились
+    movw  %ax, vbe_wx
+    movw  2(%bx), %ax
+    movw  %ax, vbe_wy
+    addw  $4, %bx
+    movw  %bx, vbe_wp
+    movw  vbe_lst, %si              # начало списка режимов
+vbe_scan:
+    movw  vbe_seg, %ax
+    movw  %ax, %fs
+    movw  %fs:(%si), %cx
+    cmpw  $0xFFFF, %cx
+    je    vbe_want_loop
+    addw  $2, %si
+    movw  %si, vbe_si
+    movw  %cx, vbe_mode
+    movw  $vbe_mi, %di
+    movw  $0x4F01, %ax
+    int   $0x10
+    cmpw  $0x004F, %ax
+    jne   vbe_resume
+    movb  vbe_mi, %al               # поддерживается, графический, линейный буфер: биты 0, 4, 7
+    andb  $0x91, %al
+    cmpb  $0x91, %al
+    jne   vbe_resume
+    cmpb  $32, vbe_mi + 0x19        # 32 бита на пиксель
+    jne   vbe_resume
+    cmpb  $6, vbe_mi + 0x1B         # direct color
+    jne   vbe_resume
+    movw  vbe_wx, %ax
+    cmpw  %ax, vbe_mi + 0x12
+    jne   vbe_resume
+    movw  vbe_wy, %ax
+    cmpw  %ax, vbe_mi + 0x14
+    je    vbe_found
+vbe_resume:
+    movw  vbe_si, %si
+    jmp   vbe_scan
+vbe_found:
+    movl  $0x31494246, fbinfo       # "FBI1"
+    movl  vbe_mi + 0x28, %eax
+    movl  %eax, fbinfo + 4
+    movw  vbe_mi + 0x12, %ax
+    movw  %ax, fbinfo + 8
+    movw  vbe_mi + 0x14, %ax
+    movw  %ax, fbinfo + 10
+    movw  vbe_mi + 0x10, %ax
+    movw  %ax, fbinfo + 12
+    movb  vbe_mi + 0x19, %al
+    movb  %al, fbinfo + 14
+    movb  vbe_mi + 0x20, %al
+    movb  %al, fbinfo + 15
+    movb  vbe_mi + 0x22, %al
+    movb  %al, fbinfo + 16
+    movb  vbe_mi + 0x24, %al
+    movb  %al, fbinfo + 17
+    movw  vbe_mode, %bx
+    orw   $0x4000, %bx              # линейный буфер
+    movw  $0x4F02, %ax
+    int   $0x10
+    cmpw  $0x004F, %ax
+    je    vbe_out
+    movl  $0, fbinfo                # режим не включился: остаёмся в тексте
+vbe_out:
+    popw  %fs
+    popal
+    ret
+
+.align 4
+.global fbinfo
+fbinfo:  .space 32                  # 0 magic "FBI1", 4 база, 8 ширина, 10 высота, 12 pitch, 14 bpp, 15..17 позиции R,G,B
+.global romfont
+romfont: .space 4096                # копия 8x16 шрифта BIOS (256 глифов по 16 байт)
+vbe_buf: .space 512
+vbe_mi:  .space 256
+vbe_want: .word 1024, 768, 800, 600, 640, 480, 0, 0
+vbe_wx:   .word 0
+vbe_wy:   .word 0
+vbe_si:   .word 0
+vbe_wp:   .word 0
+vbe_mode: .word 0
+vbe_seg:  .word 0
+vbe_lst:  .word 0
 
 .align 8
 gdt32:

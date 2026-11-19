@@ -1,6 +1,6 @@
 /* stas.h - пакетный менеджер stas и мини-язык скриптов пакетов. Чистый C, без libc.
  *
- * Пакет = один текстовый файл <имя>.stp (до 2048 байт, лимит RAMFS) на сервере репозитория.
+ * Пакет = один текстовый файл <имя>.stp (до FS_FSZ = 8192 байт, лимит RAMFS); пакет-связка (--stas-bundle) несёт много таких файлов сразу на сервере репозитория.
  * Репозиторий = обычный HTTP(S)-каталог с файлами:
  *     index.txt        строки вида:  ИМЯ SHA256(64 hex) РАЗМЕР описание...
  *     <имя>.stp        сами пакеты (скрипты на языке stas, см. ниже)
@@ -391,6 +391,7 @@ static int stas_okname(const char *s) {            /* a-z 0-9 - _ , до 15 си
     }
     return n > 0 && n < FS_NAME;
 }
+static int stas_nosync;
 static void stas_mkdir(void) { if (fs_resolve(STAS_DIR) < 0) fs_create(STAS_DIR, 1); }
 static int stas_node(const char *name) {           /* номер файла /apps/<name> или -1 */
     char p[40]; int n = 0; p[0] = 0;
@@ -408,7 +409,7 @@ static int stas_put(const char *name, const char *d, int len) {
     if (fsn[i].dir) return FS_EISDIR;
     if (len > FS_FSZ) return FS_EBAD;
     fs_write(i, d, len, 0);
-    fs_sync();
+    if (!stas_nosync) fs_sync();
     return 0;
 }
 static void stas_puti(int v) {
@@ -516,7 +517,7 @@ static void stas_update(void) {
     const char *b; int n;
     if (stas_get("index.txt", &b, &n) < 0) return;
     if (n <= 0) { puts("stas: the repository index is empty\n"); return; }
-    if (n > FS_FSZ) { puts("stas: index is too big (max 2048 bytes)\n"); return; }
+    if (n > FS_FSZ) { puts("stas: index is too big (max "); putu(FS_FSZ); puts(" bytes)\n"); return; }
     int r = stas_put(".index", b, n);
     if (r < 0) { fs_err(r); return; }
     int i = stas_node(".index"), pos = 0, cnt = 0; struct stas_ent e;
@@ -550,22 +551,31 @@ static void stas_info(const char *name) {
     puts("Info:      "); for (int k = 0; k < e.dlen; k++) putc(e.desc[k]); putc('\n');
     puts("Installed: "); puts(stas_node(name) >= 0 ? "yes\n" : "no\n");
 }
+/* заголовок пакета Lua: среди первых 4 строк ищем "--ключ значения"; копирует значения в out, 1 если нашли */
+static int stas_hdr(int idx, const char *key, char *out, int max) {
+    const u8 *d = fsdata[idx]; int n = fsn[idx].size, p = 0, kl = slen(key);
+    for (int line = 0; line < 4 && p < n; line++) {
+        int e = p; while (e < n && d[e] != '\n') e++;
+        if (e - p > kl + 3 && d[p] == '-' && d[p + 1] == '-') {
+            int k = 0; while (k < kl && d[p + 2 + k] == (u8)key[k]) k++;
+            if (k == kl && d[p + 2 + kl] == ' ') {
+                int m = 0, q = p + 3 + kl;
+                while (q < e && d[q] != '\r' && m < max - 1) out[m++] = (char)d[q++];
+                out[m] = 0; return 1;
+            }
+        }
+        p = e + 1;
+    }
+    return 0;
+}
 static void stas_install(const char *name);
 static int stas_needs_depth;
 /* вторая строка пакета Lua может быть "--needs имя имя ...": модули ставятся вместе с программой */
 static void stas_install_needs(const char *name) {
     int i = stas_node(name);
     if (i < 0 || stas_needs_depth >= 3) return;
-    const u8 *d = fsdata[i]; int n = fsn[i].size, p = 0, k = 0;
-    static const char key[] = "--needs ";
-    while (p < n && d[p] != '\n') p++;
-    p++;
-    while (key[k] && p + k < n && d[p + k] == (u8)key[k]) k++;
-    if (key[k]) return;
-    p += k;
-    char line[96]; int m = 0;
-    while (p < n && d[p] != '\n' && d[p] != '\r' && m < 95) line[m++] = (char)d[p++];
-    line[m] = 0;
+    char line[160];
+    if (!stas_hdr(i, "needs", line, sizeof line)) return;
     char *a = line, *dep;
     stas_needs_depth++;
     while ((dep = tok(&a))) {
@@ -574,6 +584,43 @@ static void stas_install_needs(const char *name) {
         stas_install(dep);
     }
     stas_needs_depth--;
+}
+/* пакет-связка: файл "--stas-bundle", затем блоки "@@ имя размер\n<ровно размер байт>\n". Один запрос ставит много модулей. */
+static int stas_is_bundle(const char *b, int n) { static const char k[] = "--stas-bundle"; if (n < 14) return 0; for (int i = 0; k[i]; i++) if (b[i] != k[i]) return 0; return b[13] == '\n' || b[13] == '\r'; }
+static void stas_install_bundle(const char *name, const struct stas_ent *e, const char *b, int n) {
+    char hx[65]; stas_sha_hex((const u8 *)b, n, hx);
+    if (n != e->size || !stas_hexeq(hx, e->hash)) {
+        int cr = 0; for (int i = 0; i < n; i++) if (b[i] == '\r') cr = 1;
+        puts(cr ? "stas: the bundle has CRLF line endings: keep repository files in LF form\n" : "stas: bundle size or SHA-256 differs from the index - rejected\n");
+        return;
+    }
+    int p = 0, files = 0, entry = 0;
+    while (p < n && b[p] != '\n') p++;
+    p++;
+    stas_nosync = 1;
+    while (p < n) {
+        if (!(b[p] == '@' && p + 3 < n && b[p + 1] == '@' && b[p + 2] == ' ')) { puts("stas: damaged bundle\n"); break; }
+        p += 3;
+        char nm[24]; int k = 0;
+        while (p < n && b[p] != ' ' && k < 23) nm[k++] = b[p++];
+        nm[k] = 0;
+        int sz = 0, dg = 0;
+        p++;
+        while (p < n && b[p] >= '0' && b[p] <= '9' && sz < 100000) { sz = sz * 10 + (b[p] - '0'); p++; dg++; }
+        if (p >= n || b[p] != '\n' || !dg || !stas_okname(nm) || sz > FS_FSZ || p + 1 + sz > n) { puts("stas: damaged bundle\n"); break; }
+        p++;
+        int r = stas_put(nm, b + p, sz);
+        if (r < 0) { fs_err(r); break; }
+        if (streq(nm, name)) entry = 1;
+        files++; p += sz;
+        if (p < n && b[p] == '\n') p++;
+    }
+    stas_nosync = 0;
+    fs_sync();
+    if (!files) return;
+    puts("Installed "); puts(name); puts(" ("); putu((u32)files); puts(files == 1 ? " file, " : " files, "); putu((u32)n); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
+    if (!entry) puts("stas: warning - the bundle has no file named like the package\n");
+    stas_install_needs(name);
 }
 static void stas_install(const char *name) {
     if (!stas_okname(name)) { puts("stas: bad package name (a-z 0-9 - _ , up to 15 characters)\n"); return; }
@@ -585,7 +632,8 @@ static void stas_install(const char *name) {
     stas_cat(fn, &k, sizeof fn, name); stas_cat(fn, &k, sizeof fn, ".stp");
     const char *b; int n;
     if (stas_get(fn, &b, &n) < 0) return;
-    if (n > FS_FSZ) { puts("stas: package is too big (max 2048 bytes)\n"); return; }
+    if (stas_is_bundle(b, n)) { stas_install_bundle(name, &e, b, n); return; }
+    if (n > FS_FSZ) { puts("stas: package is too big (max "); putu(FS_FSZ); puts(" bytes)\n"); return; }
 
     /* Normalize CRLF -> LF for Windows repository compatibility */
     static char norm_buf[FS_FSZ + 1];
@@ -626,10 +674,16 @@ static void stas_remove(const char *name) {
     if (!stas_okname(name)) { puts("stas: bad package name\n"); return; }
     int i = stas_node(name);
     if (i < 0) { puts("stas: not installed: "); puts(name); putc('\n'); return; }
+    char members[200]; members[0] = 0;
+    stas_hdr(i, "members", members, sizeof members);   /* связка: удаляем и её файлы */
     int r = fs_remove(i);
     if (r < 0) { fs_err(r); return; }
+    int extra = 0; char *a = members, *m;
+    while ((m = tok(&a))) { int j = stas_node(m); if (j >= 0 && fs_remove(j) >= 0) extra++; }
     fs_sync();
-    puts("Removed "); puts(name); putc('\n');
+    puts("Removed "); puts(name);
+    if (extra) { puts(" and "); putu((u32)extra); puts(extra == 1 ? " more file" : " more files"); }
+    putc('\n');
 }
 
 /* ---------- Интерпретатор скриптов ---------- */

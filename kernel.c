@@ -1,4 +1,3 @@
-#define XBSS __attribute__((section(".bss.xbig")))
 typedef unsigned char      u8;
 typedef unsigned short     u16;
 typedef unsigned int       u32;
@@ -30,8 +29,9 @@ static void cursor(void) {
     outb(0x3D4, 14); outb(0x3D5, pos >> 8);
     outb(0x3D4, 15); outb(0x3D5, pos & 0xFF);
 }
-static void cursor_hide(void) { outb(0x3D4, 0x0A); outb(0x3D5, 0x20); }
-static void cursor_show(void) { outb(0x3D4, 0x0A); outb(0x3D5, 14); outb(0x3D4, 0x0B); outb(0x3D5, 15); }
+static int fbc_cur = 1;                              /* курсор консоли виден (для пиксельного режима) */
+static void cursor_hide(void) { fbc_cur = 0; outb(0x3D4, 0x0A); outb(0x3D5, 0x20); }
+static void cursor_show(void) { fbc_cur = 1; outb(0x3D4, 0x0A); outb(0x3D5, 14); outb(0x3D4, 0x0B); outb(0x3D5, 15); }
 static void clear(void) {
     for (int i = 0; i < W * H; i++) vga[i] = (color << 8) | ' ';
     cx = cy = 0; cursor();
@@ -41,7 +41,10 @@ static void scroll(void) {
     for (int i = W * (H - 1); i < W * H; i++) vga[i] = (color << 8) | ' ';
     cy = H - 1;
 }
+static char *cap_buf;                               /* если задан - вывод уходит в буфер (os.exec), а не на экран */
+static int cap_n, cap_max;
 static void putc(char c) {
+    if (cap_buf) { if (cap_n < cap_max) cap_buf[cap_n++] = c; return; }
     if (c == '\n') { cx = 0; cy++; }
     else if (c == '\b') { if (cx > 0) { cx--; vga[cy * W + cx] = (color << 8) | ' '; } }
     else { vga[cy * W + cx] = (color << 8) | (u8)c; if (++cx >= W) { cx = 0; cy++; } }
@@ -167,10 +170,9 @@ static u32 now_ms(void) {              /* миллисекунды; вызыва
 }
 static u32 uptime_s(void) { return now_ms() / 1000u; }
 static void delay_ms(u32 ms) {
-    u32 t0 = now_ms();
-    while (now_ms() - t0 < ms) {
-        __asm__ volatile("pause");
-    }
+    u32 need = ms * 1193u, got = 0;
+    u16 last = pit_read();
+    while (got < need) { u16 now = pit_read(); got += (u16)(last - now); last = now; }
 }
 
 /* ---------- Случайные числа ---------- */
@@ -198,6 +200,8 @@ static void mouse_draw(void) {
     ms_shown = 1;
 }
 static u32 mouse_last_ms;
+static int gx_ok;                                    /* gfx.h: есть пиксельный режим */
+static void gx_mouse_feed(int dx, int dy, int wheel, int btn);
 static void mouse_byte(u8 b) {
     u32 now = now_ms();
     if (now - mouse_last_ms > 80) mpi = 0;
@@ -228,6 +232,7 @@ static void mouse_byte(u8 b) {
     if ((bt & 2) && !(m_buttons & 2)) m_click_r = 1;
     m_buttons = bt;
     if (wheel) m_wheel += wheel;
+    if (gx_ok) gx_mouse_feed(dx, -dy, wheel, bt);       /* пиксельные координаты для оконного менеджера */
 }
 static int kbc_wait_w(void) { for (u32 i = 0; i < 30000u; i++) if (!(inb(0x64) & 2)) return 1; return 0; }
 static int kbc_wait_r(void) { for (u32 i = 0; i < 30000u; i++) if (inb(0x64) & 1) return 1; return 0; }
@@ -284,7 +289,9 @@ static const char smap[128] = {
     'A','S','D','F','G','H','J','K','L',':','"','~',0,'|',
     'Z','X','C','V','B','N','M','<','>','?',0,'*',0,' '
 };
-static int shift, ext, ctrl_, alt_, kbd_ru, caps_lock;
+static int shift, ext, ctrl_, alt_, super_, kbd_ru, caps_lock;
+static int kbase;                                    /* физическая клавиша последнего нажатия (латиница), для gfx.poll */
+static int kmods(void) { return (shift ? 1 : 0) | (ctrl_ ? 2 : 0) | (alt_ ? 4 : 0) | (super_ ? 8 : 0); }   /* для gfx.poll */
 static void kbd_set_leds(void) {
     if (!kbc_wait_w()) return;
     outb(0x60, 0xED);
@@ -305,8 +312,9 @@ static void ru_init(void) {                        /* ЙЦУКЕН в кодов
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) { map_ru[t[i].sc] = t[i].lo; smap_ru[t[i].sc] = t[i].up; }
     smap_ru[0x03] = '"'; smap_ru[0x04] = '#'; smap_ru[0x05] = ';'; smap_ru[0x07] = ':'; smap_ru[0x08] = '?';
 }
+static void fbc_sync(void);
 static int key_poll(void) {            /* -1 если клавиши нет */
-    now_ms();
+    now_ms(); fbc_sync();
     u8 st = inb(0x64);
     if (!(st & 1)) return -1;
     u8 sc = inb(0x60);
@@ -318,17 +326,19 @@ static int key_poll(void) {            /* -1 если клавиши нет */
         if (sc == 0x9D) { ctrl_ = 0; return -1; }
         if (sc == 0x38) { alt_ = 1; if (shift) kbd_ru ^= 1; return -1; }
         if (sc == 0xB8) { alt_ = 0; return -1; }
+        if (sc == 0x5B || sc == 0x5C) { super_ = 1; return -1; }
+        if (sc == 0xDB || sc == 0xDC) { super_ = 0; return -1; }
         switch (sc) {
-            case 0x48: return K_UP;
-            case 0x50: return K_DOWN;
-            case 0x4B: return K_LEFT;
-            case 0x4D: return K_RIGHT;
-            case 0x53: return K_DEL;
-            case 0x47: return K_HOME;
-            case 0x4F: return K_END;
-            case 0x49: return K_PGUP;
-            case 0x51: return K_PGDN;
-            case 0x52: return K_INS;
+            case 0x48: { kbase = K_UP; return K_UP; }
+            case 0x50: { kbase = K_DOWN; return K_DOWN; }
+            case 0x4B: { kbase = K_LEFT; return K_LEFT; }
+            case 0x4D: { kbase = K_RIGHT; return K_RIGHT; }
+            case 0x53: { kbase = K_DEL; return K_DEL; }
+            case 0x47: { kbase = K_HOME; return K_HOME; }
+            case 0x4F: { kbase = K_END; return K_END; }
+            case 0x49: { kbase = K_PGUP; return K_PGUP; }
+            case 0x51: { kbase = K_PGDN; return K_PGDN; }
+            case 0x52: { kbase = K_INS; return K_INS; }
         }
         return -1;
     }
@@ -341,7 +351,7 @@ static int key_poll(void) {            /* -1 если клавиши нет */
     if (sc == 0x58) { kbd_ru ^= 1; return -1; }                                                  /* F12 */
     if (sc == 0x3A) { caps_lock ^= 1; kbd_set_leds(); return -1; }
     if (sc & 0x80) return -1;
-    if (sc >= 0x3B && sc <= 0x44) return K_F1 + (sc - 0x3B);
+    if (sc >= 0x3B && sc <= 0x44) { kbase = K_F1 + (sc - 0x3B); return kbase; }
     char c = kbd_ru ? (shift ? smap_ru[sc] : map_ru[sc]) : (shift ? smap[sc] : map[sc]);
     if (caps_lock && !shift) {
         if (c >= 'a' && c <= 'z') c -= 32;
@@ -352,6 +362,7 @@ static int key_poll(void) {            /* -1 если клавиши нет */
         else if ((u8)c >= 0x80 && (u8)c <= 0x8F) c += 0x20;
         else if ((u8)c >= 0x90 && (u8)c <= 0x9F) c += 0x50;
     }
+    kbase = (u8)map[sc];                                /* физическая клавиша: латинская, без Shift */
     return c ? (u8)c : -1;
 }
 static char getc(void) {
@@ -385,6 +396,7 @@ static int atoi_(const char **s) {
     return n;
 }
 
+#define FS_ATTR __attribute__((section(".bss.xbig")))
 #include "fs.h"
 
 /* ---------- ATA PIO (Primary Master) & энергонезависимое хранилище ---------- */
@@ -559,12 +571,15 @@ struct disk_super {
     u8  pad[360];
 };
 
+#define DISK_FSN_LBA 2          /* таблица узлов: 8 секторов */
+#define DISK_FSN_SECS 8
+#define DISK_DATA_LBA 16        /* данные файлов (формат 2) */
 static int disk_save(void) {
     if (!ata_present) return -1;
     struct disk_super sp;
     for (unsigned i = 0; i < sizeof sp; i++) ((u8 *)&sp)[i] = 0;
     sp.magic = CRAVG_DISK_MAGIC;
-    sp.version = 1;
+    sp.version = 2;
     sp.theme_idx = (u32)theme_index();
     sp.kbd_ru = (u32)kbd_ru;
     sp.fsn_bytes = (u32)sizeof fsn;
@@ -580,17 +595,11 @@ static int disk_save(void) {
         sp.wifi_ssid[i] = net_prof.ssid[i];
         sp.wifi_pass[i] = net_prof.pass[i];
     }
-
-    /* Write fsn (3 sectors) at LBA 2 */
-    u8 sec_buf[512 * 3];
+    u8 sec_buf[512 * DISK_FSN_SECS];
     for (unsigned i = 0; i < sizeof sec_buf; i++) sec_buf[i] = 0;
     for (unsigned i = 0; i < sizeof fsn; i++) sec_buf[i] = ((u8 *)fsn)[i];
-    if (ata_write_sectors(2, 3, sec_buf) < 0) return -1;
-
-    /* Write fsdata (256 sectors) at LBA 5 */
-    if (ata_write_sectors(5, 256, fsdata) < 0) return -1;
-
-    /* Write superblock at LBA 1 */
+    if (ata_write_sectors(DISK_FSN_LBA, DISK_FSN_SECS, sec_buf) < 0) return -1;
+    if (ata_write_sectors(DISK_DATA_LBA, (u32)(sizeof fsdata / 512), fsdata) < 0) return -1;
     if (ata_write_sectors(1, 1, &sp) < 0) return -1;
     return 0;
 }
@@ -599,15 +608,25 @@ static int disk_load(void) {
     if (!ata_present) return 0;
     struct disk_super sp;
     if (ata_read_sectors(1, 1, &sp) < 0) return 0;
-    if (sp.magic != CRAVG_DISK_MAGIC || sp.version != 1) return 0;
-    if (sp.fsn_bytes != sizeof fsn || sp.data_bytes != sizeof fsdata) return 0;
-
-    u8 sec_buf[512 * 3];
-    if (ata_read_sectors(2, 3, sec_buf) < 0) return 0;
-    if (calc_checksum(sec_buf, sizeof fsn) != sp.fsn_crc) return 0;
-
-    if (ata_read_sectors(5, 256, fsdata) < 0) return 0;
-    if (calc_checksum(fsdata, sizeof fsdata) != sp.data_crc) return 0;
+    if (sp.magic != CRAVG_DISK_MAGIC) return 0;
+    u8 sec_buf[512 * DISK_FSN_SECS];
+    int migrated = 0;
+    if (sp.version == 1) {                              /* старый формат: 64 узла по 2048 байт - переносим */
+        if (sp.fsn_bytes != 64 * (u32)sizeof(struct fsnode) || sp.data_bytes != 64 * 2048) return 0;
+        for (unsigned i = 0; i < sizeof sec_buf; i++) sec_buf[i] = 0;
+        if (ata_read_sectors(2, 3, sec_buf) < 0) return 0;
+        if (calc_checksum(sec_buf, sp.fsn_bytes) != sp.fsn_crc) return 0;
+        for (int i = 0; i < 64; i++) if (ata_read_sectors(5 + 4u * (u32)i, 4, fsdata[i]) < 0) return 0;
+        for (int i = 64; i < FS_MAXN; i++) for (int k = 0; k < FS_FSZ; k++) fsdata[i][k] = 0;
+        for (unsigned i = sp.fsn_bytes; i < sizeof fsn; i++) sec_buf[i] = 0;
+        migrated = 1;
+    } else if (sp.version == 2) {
+        if (sp.fsn_bytes != sizeof fsn || sp.data_bytes != sizeof fsdata) return 0;
+        if (ata_read_sectors(DISK_FSN_LBA, DISK_FSN_SECS, sec_buf) < 0) return 0;
+        if (calc_checksum(sec_buf, sizeof fsn) != sp.fsn_crc) return 0;
+        if (ata_read_sectors(DISK_DATA_LBA, (u32)(sizeof fsdata / 512), fsdata) < 0) return 0;
+        if (calc_checksum(fsdata, sizeof fsdata) != sp.data_crc) return 0;
+    } else return 0;
 
     disk_loading = 1;
     for (unsigned i = 0; i < sizeof fsn; i++) ((u8 *)fsn)[i] = sec_buf[i];
@@ -635,8 +654,10 @@ static int disk_load(void) {
         net_prof.connected = 1;
     }
     disk_loading = 0;
+    if (migrated) disk_save();                          /* сразу записываем в новом формате */
     return 1;
 }
+#define XBSS __attribute__((section(".bss.xbig")))
 #include "net.h"
 #include "tls.h"
 #define HTTP_TLS 1
@@ -695,7 +716,7 @@ static void fetch(void) {
         switch (i) {
         case 0: color = th->user; puts(cur_user); color = th->base; puts("@"); color = th->user; puts(cur_host); break;
         case 1: puts("-------------"); break;
-        case 2: kv("OS", "Cravgos 0.8.0 x86_64"); break;
+        case 2: kv("OS", "Cravgos 0.9.0 x86_64"); break;
         case 3: kv("Kernel", "cravgos-kernel (64-bit long mode)"); break;
         case 4: kv("Uptime", ""); putu(up / 60); puts(" min "); putu(up % 60); puts(" s"); break;
         case 5: kv("Shell", "cravsh"); break;
@@ -1565,16 +1586,11 @@ static void page_viewer(const char *title) {
 #define BR_HIST 12
 static char br_url[256], br_hist[BR_HIST][256], br_status[100];
 static int br_hn, br_top, br_focus, br_hover, br_dirty;
-static int br_focus_inp = -1;
 static struct hres br_res;
 static u8 http_data[262144] XBSS;
 static const char br_start[] =
     "<h1>Cravgos Web</h1><p>A text-mode browser. <b>Click</b> links with the mouse, scroll with the wheel, "
     "right-click goes back. Keys: G = type an address, Tab/Enter = follow a link, B = back, Q = quit.</p>"
-    "<p><b>Web Search (DuckDuckGo):</b></p>"
-    "<form action=\"http://html.duckduckgo.com/html/\" method=\"POST\">"
-    "<input type=\"text\" name=\"q\" placeholder=\"Search the web...\" size=\"30\"> "
-    "<input type=\"submit\" value=\"Search\"></form>"
     "<h2>Plain HTTP sites</h2><ul>"
     "<li><a href='http://example.com/'>example.com</a> - the classic example page</li>"
     "<li><a href='http://neverssl.com/'>neverssl.com</a> - never redirects to HTTPS</li>"
@@ -1610,10 +1626,8 @@ static void br_draw(void) {
         for (int x = 0; x < W; x++) {
             if (line < pg_lines) {
                 u16 lk = pg_lk[line][x];
-                u8 inpid = pg_inp[line][x];
                 u8 at = pg_im[line] ? pg_at[line][x] : th_page_attr(pg_at[line][x]);
                 if (lk && !pg_im[line] && (lk == br_focus || lk == br_hover)) at = th->sel;
-                if (inpid && (br_focus_inp == inpid - 1)) at = th->user;
                 put_at(x, y, pg_ch[line][x], at);
             } else put_at(x, y, ' ', th->file);
         }
@@ -1625,17 +1639,6 @@ static void br_draw(void) {
         else put_clip(1, H - 1, lk_url[br_hover], 76, th->bar);
     } else put_clip(1, H - 1, br_status, 60, th->bar);
     { char p[24]; int n = 0; p[0] = 0; apnd_u(p, &n, 24, br_top + 1); h_apnd(p, &n, 24, "/"); apnd_u(p, &n, 24, pg_lines); put_str_at(W - 1 - n, H - 1, p, th->bar); }
-    if (br_focus_inp >= 0 && br_focus_inp < inp_cnt) {
-        int il = inps[br_focus_inp].line;
-        if (il >= br_top && il < br_top + H - 2) {
-            int iy = 1 + il - br_top;
-            int vlen = 0; while (inps[br_focus_inp].value[vlen]) vlen++;
-            int ix = inps[br_focus_inp].col + 1 + vlen;
-            if (ix < inps[br_focus_inp].col + 1 + inps[br_focus_inp].width && ix < W) {
-                put_at(ix, iy, '_', th->user);
-            }
-        }
-    }
     mouse_draw();
     br_dirty = 0;
 }
@@ -1686,7 +1689,7 @@ static void br_load(const char *url, int push) {
     u[k] = 0;
     for (k = 0; u[k]; k++) br_url[k] = u[k];
     br_url[k] = 0;
-    br_top = 0; br_focus = 0; br_hover = 0; br_focus_inp = (inp_cnt > 0) ? 0 : -1;
+    br_top = 0; br_focus = 0; br_hover = 0;
     if (streq(br_url, "about:start")) {
         html_render(br_start, sizeof br_start - 1, 0);
         br_say("Cravgos Web - start page");
@@ -1737,66 +1740,6 @@ static void br_back(void) {
         while (br_hist[br_hn][k]) { u[k] = br_hist[br_hn][k]; k++; }
         u[k] = 0;
         br_load(u, 0);
-    }
-}
-static void br_submit_form(int form_idx) {
-    if (form_idx < 0 || form_idx >= form_cnt) return;
-    html_form_t *f = &forms[form_idx];
-    char post_data[1024]; int pd_len = 0; post_data[0] = 0;
-    for (int i = 0; i < inp_cnt; i++) {
-        if (inps[i].form_idx == form_idx && inps[i].name[0]) {
-            if (streq(inps[i].type, "submit") && !inps[i].value[0]) continue;
-            if (pd_len > 0 && pd_len < (int)sizeof(post_data) - 1) post_data[pd_len++] = '&';
-            for (int k = 0; inps[i].name[k] && pd_len < (int)sizeof(post_data) - 1; k++) {
-                post_data[pd_len++] = inps[i].name[k];
-            }
-            if (pd_len < (int)sizeof(post_data) - 1) post_data[pd_len++] = '=';
-            for (int k = 0; inps[i].value[k] && pd_len < (int)sizeof(post_data) - 4; k++) {
-                char c = inps[i].value[k];
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-                    post_data[pd_len++] = c;
-                } else if (c == ' ') {
-                    post_data[pd_len++] = '+';
-                } else {
-                    static const char hex[] = "0123456789ABCDEF";
-                    post_data[pd_len++] = '%';
-                    post_data[pd_len++] = hex[((u8)c >> 4) & 15];
-                    post_data[pd_len++] = hex[(u8)c & 15];
-                }
-            }
-        }
-    }
-    post_data[pd_len] = 0;
-    char target[384]; int tn = 0; target[0] = 0;
-    if (f->action[0]) {
-        url_resolve(br_url, f->action, target, sizeof(target));
-    } else {
-        h_apnd(target, &tn, sizeof(target), br_url);
-    }
-    if (streq(f->method, "POST")) {
-        br_say("Submitting POST form...");
-        struct hres hr;
-        int err = http_post_follow(target, "application/x-www-form-urlencoded", post_data, pd_len, &hr);
-        if (err < 0) {
-            br_page_error(http_err_str(err), target);
-        } else {
-            int k = 0; br_url[0] = 0; h_apnd(br_url, &k, sizeof(br_url), target);
-            html_render((const char *)(http_buf + hr.body_off), hr.body_len, !hr.html);
-            br_top = 0; br_focus = 0; br_focus_inp = (inp_cnt > 0) ? 0 : -1;
-            br_images();
-        }
-        br_dirty = 1;
-    } else {
-        if (pd_len > 0) {
-            int has_q = 0;
-            for (int k = 0; target[k]; k++) if (target[k] == '?') { has_q = 1; break; }
-            tn = 0; while (target[tn]) tn++;
-            if (!has_q && tn < (int)sizeof(target) - 1) target[tn++] = '?';
-            else if (has_q && tn < (int)sizeof(target) - 1) target[tn++] = '&';
-            target[tn] = 0;
-            h_apnd(target, &tn, sizeof(target), post_data);
-        }
-        br_load(target, 1);
     }
 }
 static void br_open_link(int id) {
@@ -1853,35 +1796,6 @@ static void browse(const char *start) {
             if (h != br_hover) { br_hover = h; br_dirty = 1; } else mouse_draw();
             continue;
         }
-        if (br_focus_inp >= 0 && br_focus_inp < inp_cnt) {
-            html_inp_t *cur_inp = &inps[br_focus_inp];
-            if (k == 27) { br_focus_inp = -1; br_dirty = 1; continue; }
-            if (k == '\t') { br_focus_inp = (br_focus_inp + 1) % inp_cnt; br_dirty = 1; continue; }
-            if (k == '\n') { br_submit_form(cur_inp->form_idx); continue; }
-            if (k == '\b') {
-                int l = 0; while (cur_inp->value[l]) l++;
-                if (l > 0) {
-                    cur_inp->value[l - 1] = 0;
-                    int ix = cur_inp->col + l;
-                    if (ix < W && cur_inp->line < pg_lines) pg_ch[cur_inp->line][ix] = ' ';
-                    br_dirty = 1;
-                }
-                continue;
-            }
-            if (((k >= 32 && k < 127) || (k >= 0x80 && k <= 0xFF)) && !streq(cur_inp->type, "submit")) {
-                int l = 0; while (cur_inp->value[l]) l++;
-                if (l < cur_inp->width && l < (int)sizeof(cur_inp->value) - 1) {
-                    cur_inp->value[l] = (char)k;
-                    cur_inp->value[l + 1] = 0;
-                    int ix = cur_inp->col + 1 + l;
-                    if (ix < W && cur_inp->line < pg_lines) {
-                        pg_ch[cur_inp->line][ix] = streq(cur_inp->type, "password") ? '*' : (char)k;
-                    }
-                    br_dirty = 1;
-                }
-                continue;
-            }
-        }
         if (k == 27 || k == 'q' || k == K_F1 + 9) break;
         else if (k == K_DOWN) br_top++;
         else if (k == K_UP) br_top--;
@@ -1889,10 +1803,7 @@ static void browse(const char *start) {
         else if (k == K_PGUP) br_top -= H - 3;
         else if (k == K_HOME) br_top = 0;
         else if (k == K_END) br_top = br_maxtop();
-        else if (k == '\t') {
-            if (inp_cnt) { br_focus_inp = 0; br_dirty = 1; }
-            else if (lk_count) { br_focus = br_focus % lk_count + 1; br_show_link(br_focus); }
-        }
+        else if (k == '\t') { if (lk_count) { br_focus = br_focus % lk_count + 1; br_show_link(br_focus); } }
         else if (k == '\n') { if (br_focus) br_open_link(br_focus); }
         else if (k == 'b' || k == '\b' || k == UI_RCLICK) br_back();
         else if (k == 'g') br_edit_url();
@@ -1906,19 +1817,8 @@ static void browse(const char *start) {
                 else if (ui_cx >= 15 && ui_cx <= 20) break;
                 else if (ui_cx >= 22) br_edit_url();
             } else {
-                int l = br_top + ui_cy - 1;
-                if (l < pg_lines && pg_inp[l][ui_cx] > 0) {
-                    br_focus_inp = pg_inp[l][ui_cx] - 1;
-                    if (streq(inps[br_focus_inp].type, "submit")) {
-                        br_submit_form(inps[br_focus_inp].form_idx);
-                    } else {
-                        br_dirty = 1;
-                    }
-                } else {
-                    int h = br_link_at(ui_cx, ui_cy);
-                    if (h) br_open_link(h);
-                    else { br_focus_inp = -1; br_dirty = 1; }
-                }
+                int h = br_link_at(ui_cx, ui_cy);
+                if (h) br_open_link(h);
             }
         }
         if (br_top > br_maxtop()) br_top = br_maxtop();
@@ -2315,7 +2215,7 @@ static void cmd_gui(void) {
 
             /* Top Taskbar */
             fill_rect(0, 0, W, 1, th->title);
-            put_clip(1, 0, "[CravgOS 0.8.0 Desktop]", 24, th->sel);
+            put_clip(1, 0, "[CravgOS 0.9.0 Desktop]", 24, th->sel);
             put_clip(27, 0, "1:Files  2:Web  3:Theme  4:Exit", 35, th->title);
             put_clip(W - 9, 0, kbd_ru ? "[RU] " : "[EN] ", 5, th->mark);
             put_clip(W - 4, 0, "[X]", 3, th->mark);
@@ -2329,7 +2229,7 @@ static void cmd_gui(void) {
             /* Main Active Window */
             if (active_win) {
                 fill_rect(win_x + 2, win_y + 1, win_w, win_h, 0x08);
-                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.8.0");
+                dlg_frame(win_x, win_y, win_w, win_h, "CravgOS Desktop Manager v0.9.0");
                 put_str_at(win_x + win_w - 4, win_y, "[X]", th->dlg);
 
                 put_clip(win_x + 3, win_y + 2, "Architecture: x86_64 Long Mode (BIOS / UEFI / GRUB)", win_w - 6, th->dlg);
@@ -2625,7 +2525,7 @@ static void setup_wizard(void) {
     clear();
     int bx = 6, by = 2, bw = 68, bh = 20;
     draw_box(bx, by, bw, bh, th->frame, 1);
-    put_str_at(bx + 18, by + 1, "CRAVGOS 0.8.0 FIRST-RUN SETUP", th->head);
+    put_str_at(bx + 18, by + 1, "CRAVGOS 0.9.0 FIRST-RUN SETUP", th->head);
     put_str_at(bx + 4, by + 3, "Welcome! Let's customize your user profile and theme.", th->base);
 
     /* Step 1: Username */
@@ -2662,7 +2562,7 @@ static void setup_wizard(void) {
         int tidx = tbuf[0] - '1';
         theme_apply(tidx);
         draw_box(bx, by, bw, bh, th->frame, 1);
-        put_str_at(bx + 18, by + 1, "CRAVGOS 0.8.0 FIRST-RUN SETUP", th->head);
+        put_str_at(bx + 18, by + 1, "CRAVGOS 0.9.0 FIRST-RUN SETUP", th->head);
     }
 
     /* Step 3: Network */
@@ -2746,6 +2646,10 @@ static const struct cinfo cmdtab[] = {
  {"lspci", "", "lspci", "List PCI devices; shows whether your network card is supported."},
  {"web", "browse", "web [URL]", "Mouse browser for http and https with Cyrillic text and PNG/JPEG/GIF pictures (up to 6 per page, shown in 16 colours; Esc skips loading). Click links, wheel scrolls, G types an address, B back, Q quits."},
  {"curl", "wget", "curl URL", "Print a web page as text inside the shell (Esc cancels). Example: curl example.com"},
+ {"wm", "", "wm", "Start cravgwm, the floating window manager (a stas package: stas install cravgwm). Needs pixel mode: run wmboot first. Exit the WM with Ctrl+Alt+Backspace or the Exit action in its configuration."},
+ {"wmboot", "", "wmboot", "Reboot into pixel mode (VBE linear framebuffer, 1024x768). The next boot is a normal text boot again unless you run wmboot again."},
+ {"textboot", "", "textboot", "Reboot into normal text mode (from pixel mode)."},
+ {"gfxinfo", "", "gfxinfo", "Show the pixel mode: resolution, framebuffer address and memory for window surfaces."},
  {"lua", "", "lua FILE | lua CODE", "Run a Lua program (integer Lua subset): lua /lua/hello.lua or lua print(6*7). Programs can draw on the screen, read keys and use files in /lua. The Lua IDE, calendar and tetris are packages: stas install luaide."},
  {"stas", "", "stas update|list|info|install|remove|run|repo", "Package manager. Packages (small scripts, games) come from your own repository: stas update, stas list, stas install nim, then just type nim. stas repo URL changes the repository; stas alone shows help."},
  {"guess", "", "guess", "Number guessing game: 1-100 in 7 tries."},
@@ -2784,8 +2688,50 @@ static int lua_edit(const char *path) {                 /* встроенный 
     editor(i);
     return 1;
 }
+/* os.exec: команда оболочки с захватом вывода; только неинтерактивные встроенные команды */
+static char lua_exec_buf[4096];
+static void run(char *line);
+static int lua_exec(const char *cmdline, char *buf, int max) {
+    static const char *const ok[] = { "echo", "time", "date", "uptime", "fastfetch", "free", "ver", "calc", "cowsay", "ls", "cd", "pwd", "mkdir", "touch",
+        "cat", "rm", "cp", "mv", "tree", "df", "save", "write", "append", "ifconfig", "dhcp", "ping", "nslookup", "arp", "netdiag", "dns", "lspci",
+        "curl", "stas", "user", "hostname", "lang", "theme", "color", "help", "beep", 0 };
+    char line[160], tmp[160]; int n = 0;
+    while (cmdline[n] && n < 159) { line[n] = cmdline[n]; tmp[n] = cmdline[n]; n++; }
+    line[n] = tmp[n] = 0;
+    char *a = tmp, *w = tok(&a);
+    if (!w) return 0;
+    const struct cinfo *c = cmd_find(w);
+    if (!c) return -1;
+    int allowed = 0;
+    for (int i = 0; ok[i]; i++) if (streq(c->name, ok[i])) allowed = 1;
+    if (!allowed) return -1;
+    char *sub = tok(&a);
+    if (streq(c->name, "stas") && sub && streq(sub, "run")) return -1;
+    if (streq(c->name, "fastfetch") && sub && streq(sub, "-a")) return -1;
+    if (max > 1 && cap_buf == 0) {
+        cap_buf = buf; cap_n = 0; cap_max = max;
+        int ocx = cx, ocy = cy; u8 oc = color;
+        run(line);
+        int got = cap_n; cap_buf = 0; cx = ocx; cy = ocy; color = oc;
+        return got;
+    }
+    return -1;
+}
+/* пиксельная графика: gfx.h (поверхности, примитивы), luagfx.h (функции для Lua), fbcon.h (консоль поверх пикселей) */
+#define GX_KBD_PENDING() (inb(0x64) & 1)
+#define GX_MODS() kmods()
+#define GX_KBASE(k) (kbase ? kbase : (k))
+#define GX_MOUSE_INIT() do { if (!mouse_tried) { mouse_tried = 1; mouse_init(); } } while (0)
+#define GX_RELEASE_HOOK() (fbc_force = 1)
+extern const u8 romfont[4096];
+extern const u8 fbinfo[32];
+static int fbc_force;
+#include "gfx.h"
 #define LUA_HEAP_ATTR XBSS
+#define LUA_EXT
 #include "lua.h"
+#include "luagfx.h"
+#include "fbcon.h"
 static void cmd_lua(char *args) {
     char code[200]; int n = 0;
     while (*args == ' ') args++;
@@ -2835,7 +2781,7 @@ static void help(char *args) {
         return;
     }
     bx_top(78);
-    bx_row("CRAVGOS 0.8.0 (x86_64) - ALL COMMANDS", "", 78);
+    bx_row("CRAVGOS 0.9.0 (x86_64) - ALL COMMANDS", "", 78);
     bx_mid(78);
     bx_row("SYSTEM   ", "help clear echo color theme lang time date uptime ver", 78);
     bx_row("         ", "fastfetch free save reboot halt crashtest user hostname setup", 78);
@@ -2847,6 +2793,7 @@ static void help(char *args) {
     bx_row("         ", "nslookup netdiag arp lspci netmgr wifi", 78);
     bx_mid(78);
     bx_row("TOOLS    ", "calc cowsay lua stas (packages) gui (desktop)", 78);
+    bx_row("PIXELS   ", "wm wmboot textboot gfxinfo (window manager, pixel mode)", 78);
     bx_row("GAMES    ", "guess rps snake                FUN   matrix beep", 78);
     bx_mid(78);
     bx_row("TIP      ", "help COMMAND shows usage and an example, e.g.  help ping", 78);
@@ -2877,7 +2824,7 @@ static void cmd_free(void) {
 }
 static void welcome(void) {
     bx_top(62);
-    bx_row("Cravgos 0.8.0 (x86_64)", "  -  operating system for x86_64", 62);
+    bx_row("Cravgos 0.9.0 (x86_64)", "  -  operating system for x86_64", 62);
     bx_mid(62);
     bx_row("fm   ", "file commander (mouse, F-keys)    theme  change colors", 62);
     bx_row("web  ", "browser: http + https, clickable links", 62);
@@ -2899,7 +2846,7 @@ static void boot_splash(void) {
     color = th->base; clear(); cursor_hide();
     draw_box(bx, by, bw, bh, th->frame, 1);
     for (int i = 0; i < 6; i++) put_str_at(bx + 5, by + 2 + i, logo[i], th->head);
-    put_str_at(bx + 5, by + 9, "Cravgos 0.8.0 (x86_64)  -  64-bit OS", th->base);
+    put_str_at(bx + 5, by + 9, "Cravgos 0.9.0 (x86_64)  -  64-bit OS", th->base);
     for (int i = 0; i < 5; i++) {
         put_str_at(bx + 5, by + 11 + i, "[    ]", th->frame);
         delay_ms(110);
@@ -2934,7 +2881,7 @@ static void run(char *line) {
     else if (streq(cmd, "date")) show_date();
     else if (streq(cmd, "uptime")) { u32 u = uptime_s(); puts("up "); putu(u / 60); puts(" min "); putu(u % 60); puts(" s\n"); }
     else if (streq(cmd, "fastfetch") || streq(cmd, "fetch") || streq(cmd, "neofetch")) fetch();
-    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.8.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
+    else if (streq(cmd, "about") || streq(cmd, "ver")) puts("Cravgos 0.9.0 (x86_64) - 64-bit OS (long mode, UEFI/BIOS/GRUB, mouse, themes, GUI, http+https)\n");
     else if (streq(cmd, "user") || streq(cmd, "username")) cmd_user(args);
     else if (streq(cmd, "hostname") || streq(cmd, "host")) cmd_hostname(args);
     else if (streq(cmd, "setup") || streq(cmd, "wizard")) cmd_setup(args);
@@ -3013,6 +2960,10 @@ static void run(char *line) {
     else if (streq(cmd, "gui") || streq(cmd, "desktop") || streq(cmd, "gfx")) cmd_gui();
     else if (streq(cmd, "theme")) cmd_theme(args);
     else if (streq(cmd, "lua")) cmd_lua(args);
+    else if (streq(cmd, "wm")) cmd_wm(args);
+    else if (streq(cmd, "wmboot")) cmd_wmboot();
+    else if (streq(cmd, "textboot")) cmd_textboot();
+    else if (streq(cmd, "gfxinfo")) cmd_gfxinfo();
     else if (streq(cmd, "stas")) cmd_stas(args);
     /* игры и прочее */
     else if (streq(cmd, "guess")) game_guess();
@@ -3144,6 +3095,7 @@ void shell_main(void) {
 void kmain(void) {
     idt_init();                                    /* первым делом: исключения больше не убивают машину */
     ru_init(); vga_font_load(); vga_blink_off();   /* кириллица и 16 цветов фона */
+    gfx_boot();                                    /* пиксельный режим, если его включил загрузчик (wmboot) */
     th = &themes[3]; color = th->base;             /* тема amber по умолчанию */
     pit_init(); pit_prev = pit_read(); pit_ms = 0; pit_rem = 0;
     boot_tod = tod();

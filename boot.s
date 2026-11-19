@@ -236,4 +236,10 @@ exc_stack_mb:
     .skip 8192
 exc_stack_top_mb:
 
+.section .data
+.global fbinfo
+fbinfo:  .space 32            # пиксельный режим при загрузке через GRUB не используется: поля нулевые
+.global romfont
+romfont: .space 4096
+
 .include "cyrfont.inc"

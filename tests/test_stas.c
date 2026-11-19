@@ -32,7 +32,8 @@ static int lua_run_src(const char *src, int len, const char *chunk) {           
 
 #define CHECK(c) do { if(!(c)) { printf("FAIL line %d: %s\n--- output ---\n%s\n", __LINE__, #c, out); return 1; } } while(0)
 #define HAS(s) (strstr(out, s) != 0)
-static char idx_buf[4096], pkg_buf[4096]; static int idx_len, pkg_len; static char last_url[300];
+static char idx_buf[8192], pkg_buf[8192]; static int idx_len, pkg_len; static char last_url[300];
+static char bun_buf[4096]; static int bun_len;
 static int mock_fetch(const char *url, const char **body, int *len) {
     strncpy(last_url, url, 299);
     const char *base = "https://raw.githubusercontent.com/Arseniy537/CravgOS/main/stas-repo/";
@@ -40,8 +41,9 @@ static int mock_fetch(const char *url, const char **body, int *len) {
     const char *f = url + strlen(base);
     if (!strcmp(f, "index.txt")) { *body = idx_buf; *len = idx_len; return 0; }
     if (!strcmp(f, "nim.stp")) { *body = pkg_buf; *len = pkg_len; return 0; }
+    if (!strcmp(f, "tb.stp")) { *body = bun_buf; *len = bun_len; return 0; }
     {   /* остальные пакеты читаются из stas-repo/ как есть */
-        static char gen[4096]; char path[200]; snprintf(path, sizeof path, "stas-repo/%s", f);
+        static char gen[200000]; char path[200]; snprintf(path, sizeof path, "stas-repo/%s", f);
         FILE *fp = fopen(path, "rb");
         if (fp) { int n = (int)fread(gen, 1, sizeof gen, fp); fclose(fp); *body = gen; *len = n; return 0; }
     }
@@ -170,6 +172,34 @@ int main(void) {
     { const char *e = "garbage\nbad zz 5 x\n# comment\nok1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 7 fine one\r\n"; memcpy(idx_buf, e, strlen(e)); idx_len = strlen(e); }
     sh("stas update"); CHECK(HAS("1 package")); sh("stas list"); CHECK(HAS("[ ] ok1") && HAS("fine one"));
 
+
+    /* пакет-связка: много файлов за один запрос, удаление по --members, защита от порчи */
+    {
+        const char *m0 = "--lua\n--members tb-a tb-b\n-- tb - test bundle\nreturn 1\n", *m1 = "return 'a'\n", *m2 = "return 'b'";
+        bun_len = snprintf(bun_buf, sizeof bun_buf, "--stas-bundle\n@@ tb %d\n%s\n@@ tb-a %d\n%s\n@@ tb-b %d\n%s\n", (int)strlen(m0), m0, (int)strlen(m1), m1, (int)strlen(m2), m2);
+        char hx[65], line[200]; stas_sha_hex((const u8 *)bun_buf, bun_len, hx);
+        int ll = snprintf(line, sizeof line, "tb %s %d test bundle\n", hx, bun_len); memcpy(idx_buf, line, (size_t)ll); idx_len = ll;
+        sh("stas update"); CHECK(HAS("Index updated: 1 package"));
+        sh("stas install tb"); CHECK(HAS("Installed tb (3 files") && HAS("sha256 ok"));
+        { int i = stas_node("tb-a"), j = stas_node("tb-b"); CHECK(i >= 0 && fsn[i].size == (int)strlen(m1) && !memcmp(fsdata[i], m1, strlen(m1)) && j >= 0 && fsn[j].size == (int)strlen(m2) && !memcmp(fsdata[j], m2, strlen(m2))); }
+        lua_nruns = 0; reset(); CHECK(stas_try_app("tb") && lua_nruns == 1 && !strcmp(lua_last_name, "tb"));
+        sh("stas list"); CHECK(HAS("[x] tb "));
+        sh("stas remove tb"); CHECK(HAS("Removed tb and 2 more files")); CHECK(stas_node("tb") < 0 && stas_node("tb-a") < 0 && stas_node("tb-b") < 0);
+        bun_buf[40] ^= 1; sh("stas install tb"); CHECK(HAS("differs from the index")); CHECK(stas_node("tb") < 0 && stas_node("tb-a") < 0); bun_buf[40] ^= 1;
+        /* верный хеш, но размер блока больше остатка файла */
+        { char bad[512]; int bn = snprintf(bad, sizeof bad, "--stas-bundle\n@@ tb 9999\nxx\n"); char hx2[65]; stas_sha_hex((const u8 *)bad, bn, hx2);
+          memcpy(bun_buf, bad, (size_t)bn); bun_len = bn; ll = snprintf(line, sizeof line, "tb %s %d bad\n", hx2, bn); memcpy(idx_buf, line, (size_t)ll); idx_len = ll;
+          sh("stas update"); sh("stas install tb"); CHECK(HAS("damaged bundle")); CHECK(stas_node("tb") < 0); }
+        /* CRLF вместо LF: хеш не сходится, подсказка про окончания строк */
+        { const char *g = "--stas-bundle\r\n@@ tb 4\r\nabcd\r\n"; bun_len = (int)strlen(g); memcpy(bun_buf, g, (size_t)bun_len);
+          ll = snprintf(line, sizeof line, "tb %s %d crlf\n", "0000000000000000000000000000000000000000000000000000000000000000", bun_len); memcpy(idx_buf, line, (size_t)ll); idx_len = ll;
+          sh("stas update"); sh("stas install tb"); CHECK(HAS("CRLF")); }
+        /* имя файла внутри связки не может выходить за /apps */
+        { char evil[300]; int en = snprintf(evil, sizeof evil, "--stas-bundle\n@@ ../x 1\na\n"); char hx3[65]; stas_sha_hex((const u8 *)evil, en, hx3);
+          memcpy(bun_buf, evil, (size_t)en); bun_len = en; ll = snprintf(line, sizeof line, "tb %s %d evil\n", hx3, en); memcpy(idx_buf, line, (size_t)ll); idx_len = ll;
+          sh("stas update"); sh("stas install tb"); CHECK(HAS("damaged bundle")); }
+    }
+
     /* интерпретатор */
     script("t1", "let a = 6\nlet b = a * 7\nsay b=$b $$ a=$a\nlet c = b / 5\nlet d = b % 5\nlet e = 0 - 9\nsay $c $d $e\n");
     CHECK(play("t1", 0, 0)); CHECK(HAS("b=42 $ a=6\n") && HAS("8 2 -9\n"));
@@ -188,7 +218,7 @@ int main(void) {
     script("t8", "put a$_\nput b\nsay\nsay end\nask q\nsay q=$q\n");
     { const char *in[] = { "42" }; CHECK(play("t8", in, 1)); CHECK(HAS("a b\n") && HAS("q=42")); }
     /* слишком длинный скрипт */
-    { char big[2048]; int n = 0; for (int i = 0; i < 200; i++) { big[n++] = 'e'; big[n++] = '\n'; } big[n] = 0; script("t9", big); CHECK(play("t9", 0, 0)); CHECK(HAS("too long")); }
+    { char big[FS_FSZ]; int n = 0; for (int i = 0; i < 200; i++) { big[n++] = 'e'; big[n++] = '\n'; } big[n] = 0; script("t9", big); CHECK(play("t9", 0, 0)); CHECK(HAS("too long")); }
 
     /* RAMFS: 64 узла - установка при переполнении сообщает об ошибке, а не падает */
     printf("test_stas: OK\n");

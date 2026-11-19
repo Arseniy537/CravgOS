@@ -1,5 +1,12 @@
 bench aef6d32dc1ad8bf1a1c902ac8baf446b1ef31690f2da238826d547f7db584ec3 402 CPU performance benchmark in stas
 calendar cd685a444ec30d76754549ccd01b4d499cc0b03785d8714e74f902eb4f1db1d1 2041 month calendar: arrows move, t today, g go to, q quit
+cravgbar 4f393f2a94d0a0b94fd74a02c27b12f13f008a2e4b704e7f931201b01e0c0916 4357 panel in the style of tint2: launchers, desktops, taskbar, clock. Config: /etc/cravgwm/cravgbar.xml
+cravgbg b7bef5f3d4b100a84f3de6cec79dbbc7d6b8a071c2f5f12ef1b3e4798f53a0c1 1999 wallpaper in the style of feh: solid, gradient, pattern, BMP image. Config: /etc/cravgwm/cravgbg.xml
+cravgfm 4314a664a4e6cabcf9425fbd907d4102930128f7a4f009ff713adbf833a944a2 5960 file manager in the style of pcmanfm: browse everywhere, change files under /lua. Config: /etc/cravgwm/cravgfm.xml
+cravgrun 8be0df31687d3b7d333855aabe4793e643f0dbc8f54d46eca4748b292190055d 3367 launcher in the style of rofi: drun, window, run modes. Config: /etc/cravgwm/cravgrun.xml
+cravgterm 22be05428572bd224a6fb01f1f9a35c14516b8c93af797737eedb4fc3185af73 4030 terminal window: runs shell commands (needs /etc/cravgwm/exec-allow), opens WM programs. Config: cravgterm.xml
+cravgwm d49bc3328c2a09efcd89af894c3f622e80ec1c3b0b751054345c466764a974ce 54351 floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
+cwm-doc 73943b66fa3810ab80a8f770abb200bfb31e99c73105265cb59894ed641dc1cd 5150 reference for the cravgwm configuration files (run in the text console: cwm-doc)
 dice b13b8850fb694b72cca438ccae1ec3d6193c780c1e40fa52edb988d41874a746 846 Roll the dice against the computer!
 fact a719ae5713ec3166dd71a0818b8676d1da21502372f570b8a749159928c7713e 288 Calculate factorial n!
 guess e3e3986fbf35f0230b2f4754d5b5bac3dbd044e1deda37eb190598e5785ae60b 384 Guess the number (1-100)
