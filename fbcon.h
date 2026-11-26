@@ -3,6 +3,9 @@
  * а fbc_sync() перерисовывает изменившиеся клетки 80x25 на экран шрифтом 8x16 (масштаб - целое число раз). */
 #ifndef FBCON_H
 #define FBCON_H
+#ifndef GX_MOUSE_INIT
+#define GX_MOUSE_INIT() do {} while (0)
+#endif
 static int stas_try_app(const char *cmd);              /* stas.h */
 static void stas_install(const char *name);
 static void stas_update(void);
@@ -86,6 +89,7 @@ static void cmd_gfxinfo(void) {
 static void cmd_wm(char *args) {
     (void)args;
     if (!gx_ok) { puts("wm needs pixel mode. Run 'wmboot' (reboots into 1024x768), then 'wm'.\n"); return; }
+    GX_MOUSE_INIT();
     if (fs_resolve("/etc/cravgwm/exec-allow") < 0) {
         fs_create("/etc", 1);
         fs_create("/etc/cravgwm", 1);

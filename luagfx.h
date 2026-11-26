@@ -36,6 +36,9 @@ enum { G_INIT = C_EXT, G_CLOSE, G_SIZE, G_SIZEOF, G_MEM, G_SURF, G_FREE, G_TARGE
 #ifndef GX_RELEASE_HOOK
 #define GX_RELEASE_HOOK() do {} while (0)
 #endif
+#ifndef GX_MOUSE_INIT
+#define GX_MOUSE_INIT() do {} while (0)
+#endif
 
 struct gev { int k, mods, base; };
 static struct gev gx_q[64];
@@ -90,6 +93,7 @@ static int lua_ext(int id, struct lval *a, int n) {
     }
     if (id == G_INIT) {
         if (!gx_ok) { L.rv[0] = LNIL; L.rv[1] = lcstr_v("no pixel mode (boot with wmboot)"); return 2; }
+        GX_MOUSE_INIT();
         for (int s = 1; s < GFX_MAXS; s++) if (gx_s[s].used) gx_del(s);
         gx_target(0); gx_clip(0, 0, gx_w, gx_h);
         for (u32 i = 0, k = (u32)gx_w * (u32)gx_h; i < k; i++) gx_s[0].px[i] = 0xFF000000u;

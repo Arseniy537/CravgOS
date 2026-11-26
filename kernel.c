@@ -250,8 +250,8 @@ static void mouse_byte(u8 b) {
     if (wheel) m_wheel += wheel;
     if (gx_ok) gx_mouse_feed(dx, -dy, wheel, bt);       /* пиксельные координаты для оконного менеджера */
 }
-static int kbc_wait_w(void) { for (u32 i = 0; i < 30000u; i++) if (!(inb(0x64) & 2)) return 1; return 0; }
-static int kbc_wait_r(void) { for (u32 i = 0; i < 30000u; i++) if (inb(0x64) & 1) return 1; return 0; }
+static int kbc_wait_w(void) { for (u32 i = 0; i < 60000u; i++) if (!(inb(0x64) & 2)) return 1; return 0; }
+static int kbc_wait_r(void) { for (u32 i = 0; i < 60000u; i++) if (inb(0x64) & 1) return 1; return 0; }
 static int mouse_write(u8 v) {
     if (!kbc_wait_w()) return 0;
     outb(0x64, 0xD4);
@@ -273,12 +273,11 @@ static void mouse_init(void) {
     outb(0x64, 0x60);
     if (!kbc_wait_w()) return;
     outb(0x60, cb);
-    if (!mouse_write(0xF6)) return;                      /* настройки по умолчанию */
+    mouse_write(0xF6);                                   /* настройки по умолчанию */
     mouse_write(0xF3); mouse_write(200); mouse_write(0xF3); mouse_write(100); mouse_write(0xF3); mouse_write(80);
     if (mouse_write(0xF2) && kbc_wait_r() && inb(0x60) == 3) mouse_wheel_mode = 1;   /* IntelliMouse: колесо */
     mouse_write(0xF3); mouse_write(100);
-    if (!mouse_write(0xF4)) return;                      /* поток данных */
-    mouse_ok = 1;
+    if (mouse_write(0xF4)) mouse_ok = 1;                 /* поток данных */
 }
 
 /* ---------- Клавиатура PS/2 (опрос) ---------- */
@@ -3120,6 +3119,7 @@ void kmain(void) {
         vga_blink_off();                           /* кириллица и 16 цветов фона */
     }
     gfx_boot();                                    /* пиксельный режим, если его включил загрузчик (wmboot) */
+    if (!mouse_tried) { mouse_tried = 1; mouse_init(); }
     th = &themes[3]; color = th->base;             /* тема amber по умолчанию */
     boot_tod = tod();
     rng ^= rdtsc32() ^ (boot_tod * 2654435761u);
