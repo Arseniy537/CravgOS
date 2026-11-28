@@ -5,16 +5,24 @@ local M = {single = true}
 function M.new(W, args)
   local U, UI = W.u, W.ui
   local root = UI.config("cravgrun")
-  if not root then return nil end
-  local a = root.a
+  local a = (root and root.a) or {}
   local lines, width = U.num(a.lines, 8), U.num(a.width, 520)
-  local c = {title = "cravgrun", kind = "overlay", class = "cravgrun", w = width, h = 40 + lines * 20, px = (W.sw - width) // 2 - 0, py = W.sh // 5,
+  local c = {title = "cravgrun", kind = "overlay", class = "cravgrun", w = width, h = 40 + lines * 20, px = (W.sw - width) // 2, py = W.sh // 5,
     bg = U.color(a.bg, 0x1e1e2e), fg = U.color(a.fg, 0xdddddd), sel = U.color(a.selbg, 0x2a5caa), bd = U.color(a.border, 0x2a5caa), sf = U.color(a.selfg, 0xffffff),
     modes = U.split(a.modes or "drun,window,run", ","), mi = 1, inp = UI.input(""), sel_i = 1, ent = {}, shown = {}}
-  for _, e in ipairs(root:list("entry")) do c.ent[#c.ent + 1] = {name = e.a.name or e.a.command, cmd = e.a.command} end
-  for _, s in ipairs(root:list("scan")) do
-    for _, f in ipairs(fs.list(s.a.dir or "/apps") or {}) do
-      if f:sub(1, #(s.a.prefix or "")) == (s.a.prefix or "") and f:sub(-1) ~= "/" then c.ent[#c.ent + 1] = {name = f, cmd = f} end
+  if root then
+    for _, e in ipairs(root:list("entry")) do c.ent[#c.ent + 1] = {name = e.a.name or e.a.command, cmd = e.a.command} end
+    for _, s in ipairs(root:list("scan")) do
+      for _, f in ipairs(fs.list(s.a.dir or "/apps") or {}) do
+        if f:sub(1, #(s.a.prefix or "")) == (s.a.prefix or "") and f:sub(-1) ~= "/" then c.ent[#c.ent + 1] = {name = f, cmd = f} end
+      end
+    end
+  else
+    for _, e in ipairs({{"Terminal", "cravgterm"}, {"Files", "cravgfm"}, {"Editor", "cravgedit"}, {"Paint", "cravgpaint"}}) do
+      if fs.exists("/apps/" .. e[2]) then c.ent[#c.ent + 1] = {name = e[1], cmd = e[2]} end
+    end
+    for _, f in ipairs(fs.list("/apps") or {}) do
+      if f:sub(1, 5) == "cravg" and f:sub(-1) ~= "/" then c.ent[#c.ent + 1] = {name = f, cmd = f} end
     end
   end
   function c:refresh()
@@ -43,13 +51,13 @@ function M.new(W, args)
     end
   end
   function c:tick() return (os.ms() // 500) % 2 ~= (self.blink or 0) and (function() self.blink = (os.ms() // 500) % 2 return true end)() end
-  function c:key(k, m)
+  function c:key(k, m, ev)
     if k == 27 then W.close(self.win) return true end
     if k == 10 then local it = self.shown[self.sel_i] W.close(self.win) if it then it.fn() end return true end
     if k == 9 then self.mi = self.mi % #self.modes + 1 self:refresh() return true end
     if k == term.DOWN then self.sel_i = math.min(self.sel_i + 1, #self.shown) return true end
     if k == term.UP then self.sel_i = math.max(self.sel_i - 1, 1) return true end
-    if UI.edit(self.inp, k, m) then self.sel_i = 1 self:refresh() return true end
+    if UI.edit(self.inp, k, m, ev) then self.sel_i = 1 self:refresh() return true end
     return false
   end
   return c

@@ -18,7 +18,10 @@ return function(x, y, s, maxw)
     if b == 45 and s:byte(i + 1) == 45 then j, col = n, 8
     elseif b == 34 or b == 39 then
       j = i + 1
-      while j < n and s:byte(j) ~= b do j = j + 1 end
+      while j <= n and s:byte(j) ~= b do
+        if s:byte(j) == 92 and j < n then j = j + 2 else j = j + 1 end
+      end
+      if j > n then j = n end
       col = 10
     elseif isw(b) then
       while j < n and isw(s:byte(j + 1)) do j = j + 1 end

@@ -47,6 +47,7 @@ return function(W)
     for _, b in ipairs({
       {"A-F4", "Close"}, {"W-Return", "Execute", "cravgterm"}, {"W-t", "Execute", "cravgterm"},
       {"W-d", "Execute", "cravgrun"}, {"W-r", "Execute", "cravgrun"}, {"W-e", "Execute", "cravgfm"},
+      {"W-g", "Execute", "cravgedit"}, {"W-p", "Execute", "cravgpaint"},
       {"A-Tab", "NextWindow"}, {"C-A-BackSpace", "Exit"}, {"W-m", "ToggleMaximize"}
     }) do add_k(cfg, b[1], {{name = b[2], a = b[3] and {command = b[3]} or {}}}) end
     for i = 1, 4 do

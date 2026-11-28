@@ -96,7 +96,7 @@ enum { GK_FREE, GK_STR, GK_VALS, GK_TAB, GK_CLO, GK_BOX, GK_AST };
 #define GC_NIL 0xFFFFFFFFu
 static u8 lua_heap[LUA_HEAP_SIZE] LUA_HEAP_ATTR __attribute__((aligned(16)));
 static u32 gc_bm[LUA_HEAP_SIZE / 16 / 32 + 1] LUA_HEAP_ATTR;  /* бит на начало каждого блока */
-static u32 lua_top, gc_free, gc_ms[2048], gc_msn, gc_ovf;
+static u32 lua_top, gc_free, gc_ms[2048] LUA_HEAP_ATTR, gc_msn, gc_ovf;
 static u32 gc_count;                                          /* число сборок (для тестов) */
 static void *lgalloc(u32 n, u8 kind);
 static void *lperm(u32 n) { return lgalloc(n, GK_AST); }      /* объекты разбора: AST, прототипы, переменные */
@@ -1184,7 +1184,7 @@ enum { C_PRINT = 1, C_TOSTRING, C_TONUMBER, C_TYPE, C_PAIRS, C_IPAIRS, C_NEXT, C
        C_S_LEN, C_S_SUB, C_S_UPPER, C_S_LOWER, C_S_REP, C_S_BYTE, C_S_CHAR, C_S_FIND, C_S_FORMAT, C_S_REVERSE,
        C_T_INSERT, C_T_REMOVE, C_T_CONCAT, C_T_SORT, C_T_UNPACK,
        C_M_FLOOR, C_M_ABS, C_M_MAX, C_M_MIN, C_M_RANDOM, C_M_RSEED, C_M_SQRT,
-       C_O_TIME, C_O_DATE, C_O_MS, C_O_SLEEP,
+       C_O_TIME, C_O_DATE, C_O_MS, C_O_SLEEP, C_O_RUNTTY, C_O_GETCLIP, C_O_SETCLIP,
        C_TM_CLEAR, C_TM_AT, C_TM_COLOR, C_TM_WRITE, C_TM_PUT, C_TM_FILL, C_TM_KEY, C_TM_GETKEY, C_TM_READLINE, C_TM_CURSOR, C_TM_SIZE,
        C_FS_LIST, C_FS_READ, C_FS_WRITE, C_FS_APPEND, C_FS_REMOVE, C_FS_EXISTS, C_FS_ISDIR, C_FS_MKDIR, C_EDIT };
 static const struct lreg { const char *lib, *name; u8 id; } lua_reg[] = {
@@ -1197,6 +1197,7 @@ static const struct lreg { const char *lib, *name; u8 id; } lua_reg[] = {
     {"math","floor",C_M_FLOOR},{"math","ceil",C_M_FLOOR},{"math","abs",C_M_ABS},{"math","max",C_M_MAX},{"math","min",C_M_MIN},
     {"math","random",C_M_RANDOM},{"math","randomseed",C_M_RSEED},{"math","sqrt",C_M_SQRT},
     {"os","time",C_O_TIME},{"os","date",C_O_DATE},{"os","ms",C_O_MS},{"os","sleep",C_O_SLEEP},
+    {"os","run_tty",C_O_RUNTTY},{"os","getclip",C_O_GETCLIP},{"os","setclip",C_O_SETCLIP},
     {"term","clear",C_TM_CLEAR},{"term","at",C_TM_AT},{"term","color",C_TM_COLOR},{"term","write",C_TM_WRITE},{"term","put",C_TM_PUT},
     {"term","fill",C_TM_FILL},{"term","key",C_TM_KEY},{"term","getkey",C_TM_GETKEY},{"term","readline",C_TM_READLINE},
     {"term","cursor",C_TM_CURSOR},{"term","size",C_TM_SIZE},
@@ -1255,11 +1256,49 @@ static int lpoll_key(void) {                               /* -1 если кла
 }
 static u32 lrand32(void) { u32 x = L.seed; x ^= x << 13; x ^= x >> 17; x ^= x << 5; L.seed = x ? x : 2463534242u; return L.seed; }
 
-static int lfs_wok(const char *p) {                        /* писать можно только в /lua */
-    if (p[0] != '/' || p[1] != 'l' || p[2] != 'u' || p[3] != 'a' || (p[4] && p[4] != '/')) return 0;
+static int lfs_wok_ex(const char *p, int need_sub) {
+    static const char *const roots[] = { "/lua", "/home", "/docs", "/etc/cravgwm" };
+    if (!p || p[0] != '/') return 0;
     for (int i = 0; p[i]; i++) if (p[i] == '.' && p[i + 1] == '.') return 0;
-    return 1;
+    for (int r = 0; r < 4; r++) {
+        const char *pre = roots[r];
+        int k = 0;
+        while (pre[k] && p[k] == pre[k]) k++;
+        if (pre[k] != 0) continue;
+        if (p[k] == 0) return need_sub ? 0 : 1;
+        if (p[k] == '/') return (!need_sub || p[k + 1] != 0);
+    }
+    return 0;
 }
+static int lfs_wok(const char *p) { return lfs_wok_ex(p, 0); }
+static int lfs_exec_ok(const char *ch) {
+    int fi = fs_resolve("/etc/cravgwm/exec-allow");
+    if (fi < 0 || fsn[fi].dir) return 0;
+    const u8 *d = fsdata[fi]; int sz = fsn[fi].size, p = 0;
+    while (p < sz) {
+        int e = p; while (e < sz && d[e] != '\n' && d[e] != '\r') e++;
+        int ln = e - p, k = 0;
+        while (k < ln && ch[k] && (u8)ch[k] == d[p + k]) k++;
+        if (ln > 0 && k == ln && !ch[k]) return 1;
+        p = e + 1;
+    }
+    return 0;
+}
+#ifndef LUA_CLIP
+static char lclip_buf[FS_FSZ] LUA_HEAP_ATTR;
+static int lclip_len;
+static int lua_getclip(char *buf, int max) {
+    int n = lclip_len < max ? lclip_len : max;
+    for (int i = 0; i < n; i++) buf[i] = lclip_buf[i];
+    return n;
+}
+static void lua_setclip(const char *s, int len) {
+    if (len < 0) len = 0;
+    if (len >= FS_FSZ) len = FS_FSZ - 1;
+    for (int i = 0; i < len; i++) lclip_buf[i] = s[i];
+    lclip_len = len;
+}
+#endif
 static struct lval lmkclosure(struct fproto *fp) {
     struct lclo *c = lgalloc(sizeof *c, GK_CLO); struct lval v; v.t = LT_FUN; v.u.f = c;
     if (c) c->fp = fp;
@@ -1597,19 +1636,46 @@ static int lcfn(int id, struct lval *a, int n) {
     }
     case C_O_MS: return ret1(lint_v((lint)now_ms()));
     case C_O_SLEEP: { lint ms = arg_io(a, n, 0, 0); if (L.err) return 0; if (ms > 10000) ms = 10000; if (ms > 0) delay_ms((u32)ms); L.since_key += 30000; return 0; }
+    case C_O_RUNTTY: {
+        const char *cmd; u32 cl;
+        if (!arg_s(a, n, 0, &cmd, &cl)) return 0;
+        if (!lfs_exec_ok(L.chunk ? L.chunk : "")) {
+            L.rv[0] = LNIL; L.rv[1] = lcstr_v("os.run_tty denied: add this program's path to /etc/cravgwm/exec-allow"); return 2;
+        }
+#ifdef LUA_RUN_TTY
+        int r = LUA_RUN_TTY(cmd);
+        if (r < 0) { L.rv[0] = LNIL; L.rv[1] = lcstr_v("command is not allowed here"); return 2; }
+        return ret1(lbool_v(r > 0));
+#else
+        L.rv[0] = LNIL; L.rv[1] = lcstr_v("os.run_tty is not available"); return 2;
+#endif
+    }
+    case C_O_GETCLIP: {
+        static char cb[FS_FSZ] LUA_HEAP_ATTR;
+        int m = lua_getclip(cb, FS_FSZ - 1);
+        if (m < 0) m = 0;
+        return ret1(lstr_v(cb, (u32)m));
+    }
+    case C_O_SETCLIP: {
+        const char *s; u32 sl;
+        if (!arg_s(a, n, 0, &s, &sl)) return 0;
+        lua_setclip(s, (int)sl);
+        return ret1(lbool_v(1));
+    }
     /* term */
-    case C_TM_CLEAR: clear(); return 0;
+    case C_TM_CLEAR: L.since_key = 0; clear(); return 0;
     case C_TM_AT: { lint x, y; if (!arg_i(a, n, 0, &x) || !arg_i(a, n, 1, &y)) return 0; cx = x < 0 ? 0 : x >= W ? W - 1 : (int)x; cy = y < 0 ? 0 : y >= H ? H - 1 : (int)y; cursor(); return 0; }
     case C_TM_COLOR: { lint f, b = (color >> 4) & 15; if (!arg_i(a, n, 0, &f)) return 0; b = arg_io(a, n, 1, b); color = (u8)(((b & 15) << 4) | (f & 15)); return 0; }
-    case C_TM_WRITE: { for (int i = 0; i < n; i++) { char b[40]; const char *p; int m = lts(a[i], b, &p); lua_putstr(p, m); } return 0; }
+    case C_TM_WRITE: { L.since_key = 0; for (int i = 0; i < n; i++) { char b[40]; const char *p; int m = lts(a[i], b, &p); lua_putstr(p, m); } return 0; }
     case C_TM_PUT: {
+        L.since_key = 0;
         lint x, y; const char *s; u32 l; if (!arg_i(a, n, 0, &x) || !arg_i(a, n, 1, &y)) return 0;
         if (n > 2 && a[2].t != LT_STR && a[2].t != LT_INT) { largerr(2, "string expected"); return 0; }
         if (!arg_s(a, n, 2, &s, &l)) return 0;
         if (y >= 0 && y < H) for (u32 i = 0; i < l; i++) { lint px = x + (lint)i; if (px >= 0 && px < W) put_at((int)px, (int)y, s[i], color); }
         return 0;
     }
-    case C_TM_FILL: return cfn_term_fill(a, n);
+    case C_TM_FILL: L.since_key = 0; return cfn_term_fill(a, n);
     case C_TM_KEY: { int k = lpoll_key(); return ret1(k >= 0 ? lint_v(k) : LNIL); }
     case C_TM_GETKEY: { int k; while ((k = lpoll_key()) < 0) { } return ret1(lint_v(k)); }
     case C_TM_READLINE: { char b[160]; L.since_key = 0; int m = readline(b, sizeof b); return ret1(lstr_v(b, (u32)m)); }
@@ -1645,7 +1711,7 @@ static int lcfn(int id, struct lval *a, int n) {
     }
     case C_FS_REMOVE: {
         const char *p; u32 pl; if (!arg_s(a, n, 0, &p, &pl)) return 0;
-        if (!lfs_wok(p) || p[4] == 0) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("removing is allowed only under /lua"); return 2; }
+        if (!lfs_wok_ex(p, 1)) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("removing is allowed only under /lua"); return 2; }
         int i = fs_resolve(p);
         if (i < 0 || fs_remove(i) < 0) return ret1(lbool_v(0));
         fs_sync(); return ret1(lbool_v(1));
@@ -1661,7 +1727,7 @@ static int lcfn(int id, struct lval *a, int n) {
     }
     case C_EDIT: {
         const char *p; u32 pl; if (!arg_s(a, n, 0, &p, &pl)) return 0;
-        if (!lfs_wok(p) || p[4] == 0) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("edit() works only with files under /lua"); return 2; }
+        if (!lfs_wok_ex(p, 1)) { L.rv[0] = lbool_v(0); L.rv[1] = lcstr_v("edit() works only with files under /lua"); return 2; }
         L.since_key = 0;
         return ret1(lbool_v(lua_edit(p)));
     }
@@ -1708,9 +1774,32 @@ static void lua_init(void) {
     lsetfield(L.globals, "_G", ltab_v(L.globals));
     lsetfield(L.globals, "_VERSION", lcstr_v("Lua (Cravgos, integer subset)"));
 }
+static int lua_running;
 /* выполнить исходник; 0 - успех, 1 - ошибка (сообщение уже выведено) */
 static int lua_run_src(const char *src, int len, const char *chunk) {
     u8 oc = color; int ocx = cx, ocy = cy;
+    int nested = lua_running > 0;
+    u8 *sv = 0; u32 saved_top = 0, saved_free = 0, saved_gcc = 0;
+    int saved_nx = 0; void *saved_sb = 0;
+    if (nested) {
+#ifdef LUA_VM_SAVE_PTR
+        sv = LUA_VM_SAVE_PTR(lua_running);
+#endif
+        if (!sv) { puts("lua: cannot run nested Lua VM\n"); return 1; }
+        u8 *p = sv;
+        const u8 *sL = (const u8 *)&L;
+        for (u32 i = 0; i < sizeof L; i++) *p++ = sL[i];
+        const u8 *sS = (const u8 *)lua_stk;
+        for (u32 i = 0; i < sizeof lua_stk; i++) *p++ = sS[i];
+        const u8 *sB = (const u8 *)gc_bm;
+        for (u32 i = 0; i < sizeof gc_bm; i++) *p++ = sB[i];
+        const u8 *sX = (const u8 *)lua_xreg;
+        for (u32 i = 0; i < sizeof lua_xreg; i++) *p++ = sX[i];
+        saved_top = lua_top; saved_free = gc_free; saved_gcc = gc_count;
+        saved_nx = lua_nx; saved_sb = lua_stack_base;
+        for (u32 i = 0; i < saved_top; i++) *p++ = lua_heap[i];
+    }
+    lua_running++;
     lua_stack_base = (u8 *)__builtin_frame_address(0) + 64;
     lua_init();
     struct fproto *fp = lua_parse(src, len, lmks_p(chunk, (u32)lua_slen(chunk))->s);
@@ -1724,10 +1813,25 @@ static int lua_run_src(const char *src, int len, const char *chunk) {
         if (L.errv.t != LT_NIL) { char b[40]; const char *p; int m = lts(L.errv, b, &p); puts("error value: "); lua_putstr(p, m); putc('\n'); }
     }
 #ifdef LUA_EXT
-    lua_ext_done();
+    if (!nested) lua_ext_done();
 #endif
+    lua_running--;
+    if (nested) {
+        u8 *p = sv;
+        u8 *dL = (u8 *)&L;
+        for (u32 i = 0; i < sizeof L; i++) dL[i] = *p++;
+        u8 *dS = (u8 *)lua_stk;
+        for (u32 i = 0; i < sizeof lua_stk; i++) dS[i] = *p++;
+        u8 *dB = (u8 *)gc_bm;
+        for (u32 i = 0; i < sizeof gc_bm; i++) dB[i] = *p++;
+        u8 *dX = (u8 *)lua_xreg;
+        for (u32 i = 0; i < sizeof lua_xreg; i++) dX[i] = *p++;
+        lua_top = saved_top; gc_free = saved_free; gc_count = saved_gcc;
+        lua_nx = saved_nx; lua_stack_base = saved_sb;
+        for (u32 i = 0; i < saved_top; i++) lua_heap[i] = *p++;
+    }
     color = oc; (void)ocx; (void)ocy;
-    cursor_show();
+    if (!nested) cursor_show();
     return bad;
 }
 #endif

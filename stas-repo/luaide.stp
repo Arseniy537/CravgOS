@@ -12,29 +12,44 @@ while true do
   if U.sel < 1 then U.sel = 1 end
   U.draw(fl)
   local k, f = term.getkey(), fl[U.sel]
+  if k >= 65 and k <= 90 then k = k + 32 end
   if k == 113 or k == 27 then break
-  elseif k == term.UP and U.sel > 1 then U.sel = U.sel - 1
-  elseif k == term.DOWN then U.sel = U.sel + 1
+  elseif k == term.UP and U.sel > 1 then U.sel = U.sel - 1 U.stop = 1
+  elseif k == term.DOWN and U.sel < #fl then U.sel = U.sel + 1 U.stop = 1
+  elseif k == term.PGUP then U.stop = U.stop - 18
+  elseif k == term.PGDN then U.stop = U.stop + 18
+  elseif k == 91 then U.stop = U.stop - 1
+  elseif k == 93 then U.stop = U.stop + 1
+  elseif k == term.HOME then U.stop = 1
   elseif k == 107 then repl() term.cursor(false)
-  elseif k == 104 then help()
+  elseif k == 104 then help() term.cursor(false)
   elseif k == 110 then
     local n = U.ask("New file name: ")
+    while #n > 0 and n:sub(1, 1) == " " do n = n:sub(2) end
+    while #n > 0 and n:sub(-1) == " " do n = n:sub(1, -2) end
     if #n > 0 then
       if n:sub(-4) ~= ".lua" then n = n .. ".lua" end
-      if #n > 15 or fs.exists("/lua/" .. n) then U.msg = "bad or existing name: " .. n
+      if #n <= 4 or #n > 15 or n:find("/", 1, true) or n:find("..", 1, true) or n:find(" ", 1, true) or fs.exists("/lua/" .. n) then
+        U.msg = "bad or existing name: " .. n
       else
-        fs.write("/lua/" .. n, 'print("Hello, Cravgos!")\n') edit("/lua/" .. n)
-        for i, v in ipairs(U.files()) do if v == n then U.sel = i end end
+        local ok, err = fs.write("/lua/" .. n, 'print("Hello, Cravgos!")\n')
+        if not ok then U.msg = tostring(err or ("cannot create: " .. n))
+        else
+          edit("/lua/" .. n) term.cursor(false) U.stop = 1
+          for i, v in ipairs(U.files()) do if v == n then U.sel = i end end
+        end
       end
     end
   elseif f then
-    if k == 10 or k == 101 then edit("/lua/" .. f)
-    elseif k == 120 then edit("/lua/" .. f) U.run(f)
+    if k == 10 or k == 101 then edit("/lua/" .. f) term.cursor(false) U.stop = 1
+    elseif k == 120 then edit("/lua/" .. f) U.stop = 1 U.run(f)
     elseif k == 114 then U.run(f)
     elseif k == 99 then
       local ok, e = load(fs.read("/lua/" .. f) or "", "=" .. f)
       U.msg = ok and "syntax OK: " .. f or e
-    elseif k == 100 and U.ask("Delete " .. f .. "? (y) ") == "y" then fs.remove("/lua/" .. f) U.msg = "deleted " .. f end
+    elseif k == 100 and U.ask("Delete " .. f .. "? (y) ") == "y" then
+      if fs.remove("/lua/" .. f) then U.msg = "deleted " .. f U.stop = 1 else U.msg = "cannot delete " .. f end
+    end
   end
 end
 term.color(7, 0) term.clear() term.cursor(true)

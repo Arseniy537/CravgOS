@@ -1,5 +1,5 @@
 --stas-bundle
-@@ cravgbar 4729
+@@ cravgbar 5114
 --lua
 --needs cravgwm
 --members 
@@ -7,23 +7,36 @@
 local M = {single = true}
 function M.new(W, args)
   local UI, U = W.ui, W.u
-  local root = UI.config("cravgbar")
-  local a = (root and root.a) or {position = "bottom", height = "28", bg = "0x1e1e2e", fg = "0xdddddd", highlight = "0x2a5caa"}
-  local h = U.num(a.height, 28)
-  local c = {title = "cravgbar", kind = "dock", edge = a.position == "top" and "top" or "bottom", size = h, class = "cravgbar", w = W.sw, h = h,
-    bg = U.color(a.bg, 0x1e1e2e), fg = U.color(a.fg, 0xdddddd), hl = U.color(a.highlight, 0x2a5caa), sc = U.num(a.scale, 1), items = {}, sig = "", hit = {}}
-  local items_node = root and root:child("items")
-  if items_node then
-    for _, n in ipairs(items_node.k or {}) do c.items[#c.items + 1] = n end
-  else
-    c.items = {
-      {tag = "launcher", a = {label = "Term", command = "cravgterm"}},
-      {tag = "launcher", a = {label = "Files", command = "cravgfm"}},
-      {tag = "desktops", a = {}},
-      {tag = "taskbar", a = {}},
-      {tag = "clock", a = {format = "%H:%M"}}
-    }
+  local a, h
+  local c = {title = "cravgbar", kind = "dock", edge = "bottom", size = 28, class = "cravgbar", w = W.sw, h = 28,
+    bg = 0x1e1e2e, fg = 0xdddddd, hl = 0x2a5caa, sc = 1, items = {}, sig = "", hit = {}}
+  function c:reload()
+    local root = UI.config("cravgbar")
+    a = (root and root.a) or {position = "bottom", height = "28", bg = "0x1e1e2e", fg = "0xdddddd", highlight = "0x2a5caa"}
+    h = U.num(a.height, 28)
+    self.edge = a.position == "top" and "top" or "bottom"
+    self.size, self.h = h, h
+    self.bg = U.color(a.bg, 0x1e1e2e)
+    self.fg = U.color(a.fg, 0xdddddd)
+    self.hl = U.color(a.highlight, 0x2a5caa)
+    self.sc = U.num(a.scale, 1)
+    self.items = {}
+    local items_node = root and root:child("items")
+    if items_node then
+      for _, n in ipairs(items_node.k or {}) do self.items[#self.items + 1] = n end
+    else
+      self.items = {
+        {tag = "launcher", a = {label = "Term", command = "cravgterm"}},
+        {tag = "launcher", a = {label = "Files", command = "cravgfm"}},
+        {tag = "launcher", a = {label = "Edit", command = "cravgedit"}},
+        {tag = "launcher", a = {label = "Paint", command = "cravgpaint"}},
+        {tag = "desktops", a = {}},
+        {tag = "taskbar", a = {}},
+        {tag = "clock", a = {format = "%H:%M"}}
+      }
+    end
   end
+  c:reload()
   local function text(self, i, t, x, w) gfx.text(x + 6, (h - 16 * self.sc) // 2, U.fit(t, w - 12, self.sc), self.fg, self.sc) end
   function c:layout()                                   -- вычислить вид и области нажатия
     local x, r, hits, draw = 4, W.sw - 4, {}, {}
@@ -39,7 +52,7 @@ function M.new(W, args)
       local t, na = n.tag, n.a
       if t == "launcher" then
         local lab = na.label or na.command or "?"
-        put(#lab * 8 * sc + 16, "left", function(px, w) gfx.fill(px, 3, w, h - 6, self.hl, 90) text(self, 0, lab, px, w) end, function() W.run(na.command) end)
+        put(#lab * 8 * sc + 14, "left", function(px, w) gfx.fill(px, 3, w, h - 6, self.hl, 90) text(self, 0, lab, px, w) end, function() W.run(na.command) end)
       elseif t == "desktops" then
         for i = 1, W.cfg.desktops do
           local lab = W.cfg.dnames[i] or tostring(i)
@@ -66,7 +79,7 @@ function M.new(W, args)
       local list = {}
       for _, w in ipairs(W.wins) do if not w.kind and (w.desk == 0 or w.desk == W.desk) then list[#list + 1] = w end end
       local room = r - x
-      local bw = math.min(U.num(root.a.taskwidth, 170), #list > 0 and room // #list - 4 or room)
+      local bw = math.min(U.num(a.taskwidth, 170), #list > 0 and room // #list - 4 or room)
       for _, w in ipairs(list) do
         draw[#draw + 1] = {x, bw, function(px, ww) if W.focus == w and not w.icon then gfx.fill(px, 3, ww, h - 6, self.hl) else gfx.fill(px, 3, ww, h - 6, self.fg, 24) end
           text(self, 0, (w.icon and "- " or "") .. w.title, px, ww) end}

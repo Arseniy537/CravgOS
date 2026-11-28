@@ -116,5 +116,14 @@ return function(W)
     end
     C.anim = busy
   end
-  function C.tick(dt) if W.focus ~= C.lastfocus then C.lastfocus = W.focus for _, w in ipairs(W.wins) do if w.cp then W.dmg(w) end end end end
+  function C.tick(dt)
+    if W.focus ~= C.lastfocus then
+      local old = C.lastfocus
+      C.lastfocus = W.focus
+      if cf.oa ~= cf.oi then
+        if old and old.cp and not old.kind then W.dmg(old) end
+        if W.focus and W.focus.cp and not W.focus.kind then W.dmg(W.focus) end
+      end
+    end
+  end
 end

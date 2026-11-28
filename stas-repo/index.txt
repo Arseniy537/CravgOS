@@ -1,20 +1,22 @@
 bench aef6d32dc1ad8bf1a1c902ac8baf446b1ef31690f2da238826d547f7db584ec3 402 CPU performance benchmark in stas
 calendar cd685a444ec30d76754549ccd01b4d499cc0b03785d8714e74f902eb4f1db1d1 2041 month calendar: arrows move, t today, g go to, q quit
-cravgbar 657bbfd44c62e312848c81d0314dda6af6505a7972257c6577fd1a8645cef142 4761 panel in the style of tint2: launchers, desktops, taskbar, clock. Config: /etc/cravgwm/cravgbar.xml
-cravgbg 01330e55ec68e854f8ac9074fd889008a571f0f492b44b2eeceb79bc9359f344 2060 wallpaper in the style of feh: solid, gradient, pattern, BMP image. Config: /etc/cravgwm/cravgbg.xml
-cravgfm 4314a664a4e6cabcf9425fbd907d4102930128f7a4f009ff713adbf833a944a2 5960 file manager in the style of pcmanfm: browse everywhere, change files under /lua. Config: /etc/cravgwm/cravgfm.xml
-cravgrun 8be0df31687d3b7d333855aabe4793e643f0dbc8f54d46eca4748b292190055d 3367 launcher in the style of rofi: drun, window, run modes. Config: /etc/cravgwm/cravgrun.xml
-cravgterm 22be05428572bd224a6fb01f1f9a35c14516b8c93af797737eedb4fc3185af73 4030 terminal window: runs shell commands (needs /etc/cravgwm/exec-allow), opens WM programs. Config: cravgterm.xml
-cravgwm 525b7356d0a20a2c0409cf04dacc04266924b81c14a9ccf431134cd87d42e4d0 57302 floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
-cwm-doc 2037cd8a7cee44bfb5cf23f545c091917ef7f5c4c96a7b932cb0a9a6412d94f5 5135 reference for the cravgwm configuration files (run in the text console: cwm-doc)
+cravgbar 8b2a0152fb070ff657b077f8da6fcef24b4332a48f4d6bdadff914c5a731847d 5146 panel in the style of tint2: launchers, desktops, taskbar, clock. Config: /etc/cravgwm/cravgbar.xml
+cravgbg b1fe930a0381c7b60f7d394eb2beca8d1c5363f7bbccd5cf0af862f8f98ce5ef 4894 wallpaper in the style of feh: solid, gradient, pattern, BMP image, live switching. Config: /etc/cravgwm/cravgbg.xml
+cravgedit 53a2f6d8eda7bf837a38fd5ce6ea77e37cf0f55988670dca2507304d1cc58c5d 12505 multi-line GUI text viewer and editor with clipboard. Config: none
+cravgfm a56094fbcccd26796dccee153020da00e38ed1d01672e278577de21a2b901fc2 8099 file manager in the style of pcmanfm: browse everywhere, edit/create/wallpaper. Config: /etc/cravgwm/cravgfm.xml
+cravgpaint 23dd99976e136269aab0efe3d02cf5dd17e6a02ff66d3bd58090f9980bed8be5 10665 simple 16-color indexed BMP Paint program. Config: none
+cravgrun 52204d4e2deb3bca3aafa3e742e2d049ed4c3edace19fdcec889e32d9e73e9c2 3781 launcher in the style of rofi: drun, window, run modes. Config: /etc/cravgwm/cravgrun.xml
+cravgterm 15c9c23e9b12e3a67d45f29b2ccdd70ee1c86554e19a0a287edab966339be79b 7766 terminal window: shell commands, interactive TTY apps, GUI launchers, clipboard. Config: cravgterm.xml
+cravgwm a6dcf0acc90a313691a58f1163139ca54b0f1db2b49ec76bef02e69fb07179a6 65955 floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
+cwm-doc c02e66f3757d9abc530e2ec3210a3ee92dd01f7356077ad098a315a13cbaa19e 4047 reference for cravgwm config, apps, templates and clipboard (run in text console: cwm-doc)
 dice b13b8850fb694b72cca438ccae1ec3d6193c780c1e40fa52edb988d41874a746 846 Roll the dice against the computer!
 fact a719ae5713ec3166dd71a0818b8676d1da21502372f570b8a749159928c7713e 288 Calculate factorial n!
 guess e3e3986fbf35f0230b2f4754d5b5bac3dbd044e1deda37eb190598e5785ae60b 384 Guess the number (1-100)
-luaide-help d7852e7d8c549409bc920373d93f69aaa3678a886c05aef0fe533e19efc55089 1564 Lua reference pages (module of luaide)
-luaide-hl e1351db4f08fcdaa0a982b78b094aa14a9fa054aabdfbe0582918a00c87535bf 1059 syntax highlighter (module of luaide)
-luaide-repl 853e92f45125166b2d2a1c228f8cd6e7a6723aad06c338a9393703023dbc86c5 822 interactive Lua console (module of luaide)
-luaide-ui 6eb5ff931bb1b9f6616e80950963161597dc6b56b857dc3e523d2cc87ba53541 1701 screen and file helpers for luaide (module)
-luaide 1da721c2833bd76bbaf75dd0adbb77b73d22eca74573895a2d1ce05fc3278b31 1525 Lua IDE: files in /lua, edit, run, check, console, help
+luaide-help 36001b480e4a53b538e97ad51a83a8e9f9c128d2d97a1703d1182c67339ce1fe 1633 Lua reference pages (module of luaide)
+luaide-hl 5d18db24846b25bdd01b7dbe8423a67b57ce7e171098b1d483d3e53c9060e153 1157 syntax highlighter (module of luaide)
+luaide-repl e2328739fd0cd03d4e8ff65d0d427c623ac6b5b9aef8e955eba655ac9f57ae40 878 interactive Lua console (module of luaide)
+luaide-ui 680e2c46f075a18c0e2e03dd7932f1e9ec8b49e8c80c2453e768790f32008ea0 2868 screen and file helpers for luaide (module)
+luaide 59b8eb2e900de4051febf12680569df90cdd5d085128fac2d118b4936896c5e8 2330 Lua IDE: files in /lua, edit, run, check, console, help
 math e0ba7b9033a7b74d1d15bdd766a8ba5542a9281d0ded9119cb4ed99f5b12e1d5 1183 Math utility: Power, Sum, GCD, Prime
 nim 8bd46690baf6d7cd6887e3e9aa9027569d5e80caf256e638c719c25aaf346283 587 game: take 1-3 sticks, whoever takes the LAST stick loses
 tetris-lib 2fe31c348180f53820ef5a749c7a632a8a13f235a6951b173b846654912fe20c 1970 game logic for tetris (module, installed with it)

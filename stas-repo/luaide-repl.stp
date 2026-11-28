@@ -6,8 +6,9 @@ return function()
   while true do
     term.color(10, 0) term.write("> ") term.color(7, 0)
     local s = term.readline()
-    if s == "exit" or s == "quit" then break end
-    if #s > 0 then
+    if s == "exit" or s == "quit" then break
+    elseif s == "clear" or s == "cls" then term.clear()
+    elseif #s > 0 then
       local f, e = load("return " .. s, "=console")
       if not f then f, e = load(s, "=console") end
       if not f then

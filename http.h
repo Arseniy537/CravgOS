@@ -12,6 +12,8 @@
 #define HE_TLS     -9
 
 static int (*http_abort)(void);
+static void (*http_progress)(int got, int total);
+static int http_aborted;
 static const char *http_accept = "text/html, text/plain";
 static int http_doh_on = 1;            /* запасной DNS через HTTPS, если обычный не дал адрес */
 static int dns_via_doh, doh_last_err;
@@ -262,14 +264,22 @@ static void http_shutdown(int https) {
     tcp_close();
 }
 #ifdef HTTP_TLS
-static void http_tls_pump(void) { net_poll(); tls_rlen = tcp_blen; }
+static void http_tls_pump(void) {
+    net_poll();
+    tls_rlen = tcp_blen;
+    if (http_progress) http_progress(tls_rlen, 0);
+}
 static int http_tls_send(const u8 *d, int n) { return tcp_send(d, n); }
-static int http_tls_dead(void) { return tcp_rst || tcp_fin || tcp_state == TCP_CLOSED; }
+static int http_tls_dead(void) {
+    if (http_abort && http_abort()) { http_aborted = 1; return 1; }
+    return tcp_rst || tcp_fin || tcp_state == TCP_CLOSED;
+}
 #endif
 
-static int http_fetch(const char *url, struct hres *r) {
+static int http_fetch_inner(const char *url, struct hres *r) {
     char host[128], path[400];
     int https, port;
+    http_aborted = 0;
     r->status = 0; r->html = 0; r->body_off = r->body_len = r->truncated = 0; r->loc[0] = r->ctype[0] = 0;
     if (http_parse_url(url, &https, host, sizeof host, &port, path, sizeof path) < 0) return HE_URL;
     if (https && !http_raw) return HE_HTTPS;
@@ -282,16 +292,16 @@ static int http_fetch(const char *url, struct hres *r) {
         ip = (ngw && ((nip >> 8) == 0x0A0002u)) ? ngw : 0x7F000001u;
     } else if (!net_parse_ip(host, &ip)) {
         ip = http_resolve(host);
-        if (!ip) return HE_DNS;
+        if (!ip) return (http_aborted || (http_abort && http_abort())) ? HE_ABORT : HE_DNS;
     }
     tcp_buf = https ? http_raw : http_buf; tcp_bmax = https ? http_rawmax : http_max;
-    if (tcp_connect(ip, (u16)port) < 0) return HE_CONNECT;
+    if (tcp_connect(ip, (u16)port) < 0) return (http_abort && http_abort()) ? HE_ABORT : HE_CONNECT;
 #ifdef HTTP_TLS
     if (https) {
         tls_raw = tcp_buf; tls_rlen = 0; tls_rpos = 0;
         tls_plain = http_buf; tls_pmax = http_max;
         tls_pump = http_tls_pump; tls_send_raw = http_tls_send; tls_dead = http_tls_dead; tls_ms = ms_now; tls_rand = http_rand;
-        if (tls_handshake(host) < 0) { tcp_close(); return HE_TLS; }
+        if (tls_handshake(host) < 0) { tcp_close(); return http_aborted ? HE_ABORT : HE_TLS; }
     }
 #endif
     char req[800]; int n = 0;
@@ -310,10 +320,10 @@ static int http_fetch(const char *url, struct hres *r) {
     h_apnd(req, &n, sizeof req, http_accept);
     h_apnd(req, &n, sizeof req, "\r\nConnection: close\r\n\r\n");
 #ifdef HTTP_TLS
-    if (https) { if (tls_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; } }
+    if (https) { if (tls_send((const u8 *)req, n) < 0) { tcp_close(); return (http_abort && http_abort()) ? HE_ABORT : HE_SEND; } }
     else
 #endif
-    if (tcp_send((const u8 *)req, n) < 0) { tcp_close(); return HE_SEND; }
+    if (tcp_send((const u8 *)req, n) < 0) { tcp_close(); return (http_abort && http_abort()) ? HE_ABORT : HE_SEND; }
     u32 t_start = ms_now(), t_last = t_start;
     int last_len = 0, hdr_end = -1, clen = -1, scan = 0, rl = 0;
     for (;;) {
@@ -323,6 +333,7 @@ static int http_fetch(const char *url, struct hres *r) {
 #endif
         rl = https ? http_tls_len() : tcp_blen;
         if (rl != last_len) { last_len = rl; t_last = ms_now(); }
+        if (http_progress) http_progress(rl, clen);
         if (hdr_end < 0) {
             hdr_end = http_find_hdr_end(http_buf, rl, scan);
             scan = rl > 3 ? rl - 3 : 0;
@@ -334,7 +345,7 @@ static int http_fetch(const char *url, struct hres *r) {
                 }
             }
         }
-        if (tcp_fin || tcp_rst || tcp_state == TCP_CLOSED || tcp_overflow || http_tls_done()) break;
+        if (tcp_fin || tcp_rst || tcp_state == TCP_CLOSED || tcp_overflow || (https && http_tls_done())) break;
         if (hdr_end >= 0 && clen >= 0 && rl - hdr_end >= clen) break;
         if (hdr_end >= 0 && clen < 0 && rl > hdr_end + 4) {
             const u8 *b = http_buf + hdr_end;
@@ -348,7 +359,7 @@ static int http_fetch(const char *url, struct hres *r) {
     }
     http_shutdown(https);
     int total = https ? http_tls_len() : tcp_blen;
-    r->truncated = tcp_overflow || http_tls_over();
+    r->truncated = tcp_overflow || (https && http_tls_over());
     if (hdr_end < 0) hdr_end = http_find_hdr_end(http_buf, total, 0);
     if (hdr_end < 0 || total < 12) return HE_NORESP;
     int st = 0, i = 0;
@@ -373,6 +384,13 @@ static int http_fetch(const char *url, struct hres *r) {
     if (!r->ctype[0]) { is_text = 1; is_html = (body_len > 0 && http_buf[hdr_end] == '<'); }
     r->html = is_html ? 1 : (is_text ? 0 : -1);
     return 0;
+}
+static int http_fetch(const char *url, struct hres *r) {
+    int (*prev_na)(void) = net_abort;
+    net_abort = http_abort;
+    int res = http_fetch_inner(url, r);
+    net_abort = prev_na;
+    return res;
 }
 static int http_get_follow(const char *url, struct hres *r) {
     char cur[256];
@@ -443,6 +461,7 @@ static u32 http_doh_lookup(const char *name) {
         int e = http_fetch(url, &r);
         http_accept = old;
         doh_last_err = e;
+        if (e == HE_ABORT) return 0;
         if (e < 0 || r.status != 200 || r.body_len <= 0) continue;
         const char *js = (const char *)http_buf + r.body_off;
         u32 ip = json_first_ipv4(js, r.body_len);
@@ -458,6 +477,8 @@ static u32 http_resolve(const char *name) {                  /* обычный D
     dns_via_doh = 0;
     u32 ip = net_dns(name);
     if (ip) return ip;
+    if (http_abort && http_abort()) return 0;
+    if (dns_why == 1 || dns_why == 2) return 0;
     ip = http_doh_lookup(name);
     if (ip) { dns_via_doh = 1; dns_why = 0; }
     return ip;

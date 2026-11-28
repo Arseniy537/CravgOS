@@ -96,9 +96,9 @@ static void cmd_wm(char *args) {
         int f = fs_create("/etc/cravgwm/exec-allow", 0);
         if (f >= 0) fs_write(f, "/apps/cravgterm\n", 16, 0);
     }
-    if (fs_resolve("/apps/cravgwm") < 0) {
+    if (fs_resolve("/apps/cravgwm") < 0 || fs_resolve("/apps/cravgedit") < 0 || fs_resolve("/apps/cravgpaint") < 0) {
         puts("Installing cravgwm and companion packages...\n");
-        if (fs_resolve("/lua/.index") < 0) stas_update();
+        stas_update();
         stas_install("cravgwm");
     }
     if (!stas_try_app("cravgwm")) puts("cravgwm is not installed: stas update, then stas install cravgwm\n");

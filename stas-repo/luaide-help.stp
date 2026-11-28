@@ -20,8 +20,8 @@ TERMINAL
 SYSTEM
  os.ms()  os.sleep(ms)  os.time()  os.date() -> year month day hour min sec wday
  fs.list(dir) read(path) write(path, text) append remove exists isdir mkdir
- files are written only under /lua, up to 2048 bytes each
- edit(path) opens the built-in text editor
+ files are written up to 8192 bytes each (under /lua, /home, /docs, /etc/cravgwm)
+ edit(path) opens the built-in text editor; PgUp/PgDn scrolls preview in IDE
 ]]}
 return function()
   for n, text in ipairs(P) do
@@ -30,6 +30,6 @@ return function()
     term.color(7, 0) term.at(0, 2) term.write(text)
     term.color(8, 0) term.put(1, 24, "any key: next page, q: close")
     local k = term.getkey()
-    if k == 113 or k == 27 then return end
+    if k == 113 or k == 81 or k == 27 then return end
   end
 end

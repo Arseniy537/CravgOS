@@ -1,7 +1,7 @@
 --stas-bundle
-@@ cravgwm 3128
+@@ cravgwm 3205
 --lua
---needs cravgbar cravgbg cravgrun cravgterm cravgfm cwm-doc
+--needs cravgbar cravgbg cravgrun cravgterm cravgfm cravgedit cravgpaint cwm-doc
 --members cwm-act cwm-comp cwm-conf cwm-deco cwm-input cwm-menu cwm-paint cwm-ui cwm-util cwm-win cwm-wops cwm-xml cwm-xmlf
 -- cravgwm - floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
 if CWM then return CWM end
@@ -76,14 +76,14 @@ while not W.quit do
   end
   local ok5, e5 = pcall(W.render)
   if not ok5 then W.log("render: " .. tostring(e5)) W.dx = nil end
-  os.sleep(5)
+  if n == 0 then os.sleep(W.comp and W.comp.pending() and 4 or 2) end
 end
 gfx.close()
 CWM = nil
 
-@@ cwm-act 3329
+@@ cwm-act 6534
 --lua
--- cwm-act - actions for key and mouse bindings (module of cravgwm)
+-- cwm-act - actions for key and mouse bindings and rc.xml templates (module of cravgwm)
 return function(W)
   local U = W.u
   local A = {}
@@ -99,11 +99,48 @@ return function(W)
     if cmd == "" then return end
     local sp = cmd:find(" ", 1, true)
     local name, args = cmd:sub(1, (sp or #cmd + 1) - 1), sp and U.trim(cmd:sub(sp + 1)) or ""
+    if args ~= "" then
+      for _, w in ipairs(W.wins) do
+        if w.c.app == name and w.c.apply then w.c:apply(args) return w end
+      end
+    end
     return W.spawn(name, args)
+  end
+  local TPLS = {
+    default = '<cravgwm><desktops number="4"><name>web</name><name>code</name><name>files</name><name>misc</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="center"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="22" align="left"/><border width="2"/><root color="#101820"/>'
+      .. '<active title="#2a5caa" title2="#1b3f7a" text="#ffffff" border="#2a5caa"/><inactive title="#555555" text="#cccccc" border="#555555"/></theme></cravgwm>\n',
+    dark = '<cravgwm><desktops number="4"><name>web</name><name>code</name><name>files</name><name>misc</name></desktops>'
+      .. '<focus model="follow" raise="yes"/><placement policy="cascade"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="22" align="left"/><border width="2"/><root color="#0d1117"/>'
+      .. '<active title="#3b4261" title2="#1f2335" text="#c0caf5" border="#7aa2f7"/><inactive title="#1e2030" text="#565f89" border="#292e42"/>'
+      .. '<menu bg="#1a1b26" fg="#c0caf5" sel="#3b4261" selfg="#ffffff" border="#7aa2f7"/></theme></cravgwm>\n',
+    compact = '<cravgwm><desktops number="2"><name>main</name><name>work</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="cascade"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="18" align="left"/><border width="1"/>'
+      .. '<buttons size="12" gap="3"/><active title="#1e6655" text="#ffffff" border="#1e6655"/><inactive title="#383838" text="#aaaaaa" border="#383838"/></theme></cravgwm>\n',
+    classic = '<cravgwm><desktops number="4"><name>1</name><name>2</name><name>3</name><name>4</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="center"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="24" align="center"/><border width="3"/>'
+      .. '<active title="#1b4f72" title2="#2874a6" text="#ffffff" border="#2874a6"/><inactive title="#4a4a4a" text="#cccccc" border="#4a4a4a"/></theme></cravgwm>\n'
+  }
+  W.tpls = {"default", "dark", "compact", "classic"}
+  function A.ApplyTemplate(c, a)
+    local nm = U.trim((a and (a.template or a.name)) or "default")
+    local fp = (a and a.file) or ("/etc/cravgwm/tpl/" .. nm .. (nm:sub(-4) == ".xml" and "" or ".xml"))
+    local data = fs.exists(fp) and fs.read(fp) or TPLS[nm]
+    if not data then W.log("unknown template: " .. nm) return end
+    if not fs.exists("/etc") then fs.mkdir("/etc") end
+    if not fs.exists("/etc/cravgwm") then fs.mkdir("/etc/cravgwm") end
+    local ok, err = fs.write("/etc/cravgwm/rc.xml", data)
+    if not ok then W.log("template write: " .. tostring(err)) return end
+    if W.menu and W.menu.reload then W.menu.reload() end
+    W.reconf = true
   end
   function A.Execute(c, a) W.run(a.command or a.execute) end
   function A.Exit() W.quit = true end
-  function A.Reconfigure() W.reconf = true end
+  function A.Reconfigure() if W.menu and W.menu.reload then W.menu.reload() end W.reconf = true end
   function A.Close(c) if c.w then W.close(c.w) end end
   function A.Raise(c) if c.w then W.raise(c.w) end end
   function A.Lower(c) if c.w then W.lower(c.w) end end
@@ -151,7 +188,7 @@ return function(W)
   end
 end
 
-@@ cwm-comp 5594
+@@ cwm-comp 5761
 --lua
 -- cwm-comp - compositor (cravgcomp): shadows, opacity, fading, rounded corners. Config: /etc/cravgwm/cravgcomp.xml
 return function(W)
@@ -270,10 +307,19 @@ return function(W)
     end
     C.anim = busy
   end
-  function C.tick(dt) if W.focus ~= C.lastfocus then C.lastfocus = W.focus for _, w in ipairs(W.wins) do if w.cp then W.dmg(w) end end end end
+  function C.tick(dt)
+    if W.focus ~= C.lastfocus then
+      local old = C.lastfocus
+      C.lastfocus = W.focus
+      if cf.oa ~= cf.oi then
+        if old and old.cp and not old.kind then W.dmg(old) end
+        if W.focus and W.focus.cp and not W.focus.kind then W.dmg(W.focus) end
+      end
+    end
+  end
 end
 
-@@ cwm-conf 7586
+@@ cwm-conf 7659
 --lua
 -- cwm-conf - reads /etc/cravgwm/rc.xml (module of cravgwm)
 return function(W)
@@ -323,6 +369,7 @@ return function(W)
     for _, b in ipairs({
       {"A-F4", "Close"}, {"W-Return", "Execute", "cravgterm"}, {"W-t", "Execute", "cravgterm"},
       {"W-d", "Execute", "cravgrun"}, {"W-r", "Execute", "cravgrun"}, {"W-e", "Execute", "cravgfm"},
+      {"W-g", "Execute", "cravgedit"}, {"W-p", "Execute", "cravgpaint"},
       {"A-Tab", "NextWindow"}, {"C-A-BackSpace", "Exit"}, {"W-m", "ToggleMaximize"}
     }) do add_k(cfg, b[1], {{name = b[2], a = b[3] and {command = b[3]} or {}}}) end
     for i = 1, 4 do
@@ -611,7 +658,7 @@ return function(W)
   end
 end
 
-@@ cwm-menu 6237
+@@ cwm-menu 7159
 --lua
 -- cwm-menu - Openbox-style menus from /etc/cravgwm/menu.xml (module of cravgwm)
 return function(W)
@@ -619,6 +666,7 @@ return function(W)
   W.menu = M
   local defs
   local n = 0
+  function M.reload() defs = nil end
   local function scan(node)                    -- id -> <menu>; вложенные меню получают собственные id
     for _, c in ipairs(node.k) do
       if c.tag == "menu" then
@@ -634,6 +682,19 @@ return function(W)
         if not w.kind then l[#l + 1] = {label = (w.icon and "[" or "") .. w.title .. (w.icon and "]" or ""), fn = function() if w.icon then W.restore(w) else W.raise(w) W.focus_win(w) end if w.desk ~= 0 then W.goto(w.desk) end end} end
       end
       return l
+    elseif id == "tpl-menu" then
+      local seen = {}
+      for _, f in ipairs(fs.list("/etc/cravgwm/tpl") or {}) do
+        if f:sub(-4) == ".xml" then
+          local nm = f:sub(1, -5)
+          seen[nm] = true
+          l[#l + 1] = {label = nm, acts = {{name = "ApplyTemplate", a = {template = nm, file = "/etc/cravgwm/tpl/" .. f}}}}
+        end
+      end
+      for _, nm in ipairs(W.tpls or {"default", "dark", "compact", "classic"}) do
+        if not seen[nm] then l[#l + 1] = {label = nm, acts = {{name = "ApplyTemplate", a = {template = nm}}}} end
+      end
+      return l
     elseif id == "client-menu" then
       local w = ctx.w
       local function a(name, to) return function() W.do_acts({{name = name, a = {to = to}}}, {w = w}) end end
@@ -643,12 +704,15 @@ return function(W)
     local node = defs[id]
     if not node then
       if id == "root-menu" then
-        local function act(n, cmd) return {{name = n, a = cmd and {command = cmd} or {}}} end
+        local function act(nm, cmd) return {{name = nm, a = cmd and {command = cmd} or {}}} end
         local it = {}
         if fs.exists("/apps/cravgterm") then it[#it + 1] = {label = "Terminal", acts = act("Execute", "cravgterm")} end
         if fs.exists("/apps/cravgfm") then it[#it + 1] = {label = "Files", acts = act("Execute", "cravgfm")} end
+        if fs.exists("/apps/cravgedit") then it[#it + 1] = {label = "Editor", acts = act("Execute", "cravgedit")} end
+        if fs.exists("/apps/cravgpaint") then it[#it + 1] = {label = "Paint", acts = act("Execute", "cravgpaint")} end
         if fs.exists("/apps/cravgrun") then it[#it + 1] = {label = "Launcher", acts = act("Execute", "cravgrun")} end
         if #it > 0 then it[#it + 1] = {sep = true} end
+        it[#it + 1] = {label = "Templates  >", sub = "tpl-menu"}
         it[#it + 1] = {label = "Windows  >", sub = "client-list-menu"}
         it[#it + 1] = {sep = true}
         it[#it + 1] = {label = "Exit", acts = act("Exit")}
@@ -760,7 +824,7 @@ return function(W)
   end
 end
 
-@@ cwm-paint 3002
+@@ cwm-paint 4889
 --lua
 -- cwm-paint - drawing: damage, background, windows, overlays, cursor (module of cravgwm)
 return function(W)
@@ -783,6 +847,8 @@ return function(W)
     "X.X X..X", "XX  X..X", "X    X..X", "     X..X", "      X..X", "      X..X", "       XX"}
   function W.mkcursor()
     W.cur = gfx.surface(12, 19)
+    W.cur_bg = gfx.surface(12, 19)
+    W.cdrawn = false
     gfx.target(W.cur)
     for y, row in ipairs(ARROW) do
       for x = 1, #row do
@@ -793,10 +859,7 @@ return function(W)
     gfx.target(0)
   end
   function W.cursor_move(x, y)
-    if x == W.mx and y == W.my then return end
-    W.damage(W.mx, W.my, 12, 19)
     W.mx, W.my = x, y
-    W.damage(x, y, 12, 19)
   end
   function W.render()
     for _, w in ipairs(W.wins) do
@@ -810,12 +873,43 @@ return function(W)
       end
     end
     if W.comp and W.comp.pending() then W.comp.step() end
-    if not W.dx then return end
+    local mx, my = W.mx, W.my
+    local has_cur = W.cur and W.cur_bg
+    local need_cur = has_cur and (not W.cdrawn or mx ~= W.cmx or my ~= W.cmy)
+    if not W.dx and not need_cur then return end
+    gfx.target(0)
+    if not W.dx then
+      local ox, oy = W.cmx, W.cmy
+      gfx.clip()
+      if W.cdrawn then gfx.blit(W.cur_bg, ox, oy) end
+      gfx.target(W.cur_bg) gfx.clip() gfx.blit(0, 0, 0, nil, mx, my, 12, 19) gfx.target(0)
+      gfx.blit(W.cur, mx, my, 255)
+      if W.cdrawn then
+        if math.abs(ox - mx) < 12 and math.abs(oy - my) < 19 then
+          local fx, fy = math.min(ox, mx), math.min(oy, my)
+          gfx.flip(fx, fy, math.max(ox, mx) + 12 - fx, math.max(oy, my) + 19 - fy)
+        else
+          gfx.flip(ox, oy, 12, 19)
+          gfx.flip(mx, my, 12, 19)
+        end
+      else gfx.flip(mx, my, 12, 19) end
+      W.cmx, W.cmy, W.cdrawn = mx, my, true
+      return
+    end
     local x, y, w, h = W.dx, W.dy, W.dx2 - W.dx, W.dy2 - W.dy
     W.dx = nil
-    gfx.target(0)
+    local ox, oy = W.cmx, W.cmy
+    local moved = W.cdrawn and (ox ~= mx or oy ~= my)
+    local old_in = W.cdrawn and ox >= x and oy >= y and ox + 12 <= x + w and oy + 19 <= y + h
+    local old_hit = W.cdrawn and ox + 12 > x and oy + 19 > y and ox < x + w and oy < y + h
+    local touch_cur = has_cur and (not W.cdrawn or moved or old_hit)
+    if W.cdrawn and touch_cur and not old_in then gfx.clip() gfx.blit(W.cur_bg, ox, oy) end
     gfx.clip(x, y, w, h)
-    gfx.fill(0, 0, W.sw, W.sh, W.cfg.theme.root)
+    local has_bg = false
+    for _, win in ipairs(W.wins) do
+      if win.kind == "desktop" and W.visible(win) and win.fs and win.x <= x and win.y <= y and win.x + win.cw >= x + w and win.y + win.ch >= y + h then has_bg = true break end
+    end
+    if not has_bg then gfx.fill(x, y, w, h, W.cfg.theme.root) end
     for _, win in ipairs(W.wins) do
       if W.visible(win) and win.fs then
         local fx, fy, fw, fh = W.frect(win)
@@ -826,45 +920,127 @@ return function(W)
     end
     if W.comp then W.comp.ghosts() end
     if W.grab and W.grab.paint then W.grab:paint() end
-    local now, ly = os.ms(), 0
-    for _, l in ipairs(W.logs) do
-      if now - l[2] < 15000 then
-        gfx.fill(0, ly, #l[1] * 8 + 8, 16, 0x400000, 220) gfx.text(4, ly, l[1], 0xFF8080)
-        ly = ly + 16
+    if #W.logs > 0 then
+      local now, ly = os.ms(), 0
+      for _, l in ipairs(W.logs) do
+        if now - l[2] < 15000 then
+          gfx.fill(0, ly, #l[1] * 8 + 8, 16, 0x400000, 220) gfx.text(4, ly, l[1], 0xFF8080)
+          ly = ly + 16
+        end
       end
     end
-    if W.cur then gfx.blit(W.cur, W.mx, W.my, 255) end
     gfx.clip()
+    if touch_cur then
+      gfx.target(W.cur_bg) gfx.clip() gfx.blit(0, 0, 0, nil, mx, my, 12, 19) gfx.target(0)
+      gfx.blit(W.cur, mx, my, 255)
+      W.cmx, W.cmy, W.cdrawn = mx, my, true
+    end
     gfx.flip(x, y, w, h)
+    if touch_cur then
+      if moved and not old_in then gfx.flip(ox, oy, 12, 19) end
+      if not (mx >= x and my >= y and mx + 12 <= x + w and my + 19 <= y + h) then gfx.flip(mx, my, 12, 19) end
+    end
   end
 end
 
-@@ cwm-ui 1824
+@@ cwm-ui 4146
 --lua
--- cwm-ui - helpers for programs: line editor, config loading (module of cravgwm)
+-- cwm-ui - helpers for programs: line editor with clipboard, config loading (module of cravgwm)
 return function(W)
   local UI = {}
   W.ui = UI
-  function UI.input(t) t = t or "" return {t = t, p = #t} end
-  -- editing keys; returns true if the text or the cursor changed
-  function UI.edit(e, k, m)
+  function UI.input(t) t = t or "" return {t = t, p = #t, from = 0} end
+  local function srange(e)
+    if not e.s or e.s == e.p then return nil end
+    if e.s < e.p then return e.s, e.p end
+    return e.p, e.s
+  end
+  local function delsel(e)
+    local a, b = srange(e)
+    if not a then return false end
+    e.t = e.t:sub(1, a) .. e.t:sub(b + 1)
+    e.p, e.s = a, nil
+    return true
+  end
+  local function getsel(e)
+    local a, b = srange(e)
+    return a and e.t:sub(a + 1, b) or ""
+  end
+  local function basekey(k, ev)
+    local b = ev and ev.base or k
+    if b >= 65 and b <= 90 then b = b + 32 end
+    return b
+  end
+  -- editing keys; returns true if the text, selection or cursor changed
+  function UI.edit(e, k, m, ev)
+    m = m or 0
     local t, p = e.t, e.p
-    if k == 8 then if p > 0 then e.t, e.p = t:sub(1, p - 1) .. t:sub(p + 1), p - 1 return true end
-    elseif k == term.DEL then if p < #t then e.t = t:sub(1, p) .. t:sub(p + 2) return true end
-    elseif k == term.LEFT then e.p = math.max(0, p - 1) return true
-    elseif k == term.RIGHT then e.p = math.min(#t, p + 1) return true
-    elseif k == term.HOME then e.p = 0 return true
-    elseif k == term.END then e.p = #t return true
-    elseif k >= 32 and k < 256 and (m or 0) & 6 == 0 then e.t, e.p = t:sub(1, p) .. string.char(k) .. t:sub(p + 1), p + 1 return true end
+    local ctrl, shift = (m & 2) ~= 0, (m & 1) ~= 0
+    local b = basekey(k, ev)
+    if ctrl and (m & 12) == 0 then
+      if b == 97 or k == 1 then e.s, e.p = 0, #t return true end
+      if b == 99 or k == 3 then
+        local s = getsel(e)
+        if s ~= "" and os.setclip then os.setclip(s) end
+        return s ~= ""
+      end
+      if b == 120 or k == 24 then
+        local s = getsel(e)
+        if s ~= "" then if os.setclip then os.setclip(s) end delsel(e) return true end
+        return false
+      end
+      if b == 118 or k == 22 then
+        local s = os.getclip and os.getclip() or ""
+        if s == "" then return false end
+        local nl = s:find("\n", 1, true)
+        if nl then s = s:sub(1, nl - 1) end
+        if s:sub(-1) == "\r" then s = s:sub(1, -2) end
+        if s == "" then return false end
+        delsel(e)
+        e.t = e.t:sub(1, e.p) .. s .. e.t:sub(e.p + 1)
+        e.p = e.p + #s
+        return true
+      end
+      return false
+    end
+    if k == 8 then
+      if delsel(e) then return true end
+      if p > 0 then e.t, e.p = t:sub(1, p - 1) .. t:sub(p + 1), p - 1 return true end
+    elseif k == term.DEL then
+      if delsel(e) then return true end
+      if p < #t then e.t = t:sub(1, p) .. t:sub(p + 2) return true end
+    elseif k == term.LEFT or k == term.RIGHT or k == term.HOME or k == term.END then
+      local a, b = srange(e)
+      if shift then if not e.s then e.s = p end else e.s = nil end
+      if k == term.LEFT then e.p = (not shift and a) and a or math.max(0, p - 1)
+      elseif k == term.RIGHT then e.p = (not shift and b) and b or math.min(#t, p + 1)
+      elseif k == term.HOME then e.p = 0
+      else e.p = #t end
+      if e.s == e.p then e.s = nil end
+      return true
+    elseif k >= 32 and k < 256 and (m & 14) == 0 then
+      delsel(e)
+      e.t, e.p = e.t:sub(1, e.p) .. string.char(k) .. e.t:sub(e.p + 1), e.p + 1
+      return true
+    end
     return false
   end
-  -- text of the editor with a cursor at (x, y); width w in pixels
-  function UI.draw_input(e, x, y, w, fg, scale)
+  -- text of the editor with selection highlight and cursor at (x, y); width w in pixels
+  function UI.draw_input(e, x, y, w, fg, scale, selbg)
     scale = scale or 1
-    local cols = w // (8 * scale)
-    local from = math.max(0, e.p - cols + 1)
+    local cw = 8 * scale
+    local cols = math.max(1, w // cw)
+    local from = e.from or 0
+    if e.p < from then from = e.p elseif e.p >= from + cols then from = e.p - cols + 1 end
+    from = math.max(0, from)
+    e.from = from
+    local a, b = srange(e)
+    if a then
+      local va, vb = math.max(a, from), math.min(b, from + cols)
+      if vb > va then gfx.fill(x + (va - from) * cw, y, (vb - va) * cw, 16 * scale, selbg or 0x2a5caa) end
+    end
     gfx.text(x, y, e.t:sub(from + 1, from + cols), fg, scale)
-    if (os.ms() // 500) % 2 == 0 then gfx.fill(x + (e.p - from) * 8 * scale, y + 14 * scale, 8 * scale, 2 * scale, fg) end
+    if (os.ms() // 500) % 2 == 0 then gfx.fill(x + (e.p - from) * cw, y + 14 * scale, cw, 2 * scale, fg) end
   end
   -- loads /etc/cravgwm/<name>.xml; on parse error writes to the WM log
   function UI.config(name)

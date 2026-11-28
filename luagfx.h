@@ -18,7 +18,7 @@
 #ifndef LUAGFX_H
 #define LUAGFX_H
 enum { G_INIT = C_EXT, G_CLOSE, G_SIZE, G_SIZEOF, G_MEM, G_SURF, G_FREE, G_TARGET, G_CLIP, G_FILL, G_RAW, G_PX, G_TEXT, G_TEXTW,
-       G_BLIT, G_SCALE, G_GRAD, G_ROUND, G_SHADOW, G_BMP, G_FLIP, G_POLL, G_MOUSE, G_SETMOUSE, G_MODS, G_SHOT, O_EXEC };
+       G_BLIT, G_SCALE, G_GRAD, G_ROUND, G_SHADOW, G_BMP, G_FLIP, G_POLL, G_MOUSE, G_SETMOUSE, G_MODS, G_SHOT, G_SUSPEND, O_EXEC };
 
 /* среда: ядро (или тест) определяет эти функции до подключения файла */
 #ifndef GX_KBD_PENDING
@@ -47,18 +47,33 @@ static int gx_mx, gx_my, gx_mb, gx_pmb, gx_wheel, gx_mdx, gx_mdy, gx_mmoved;
 
 /* вызывается драйвером мыши: приращения (вниз - положительное dy), колесо, маска кнопок */
 static void gx_mouse_feed(int dx, int dy, int wheel, int btn) {
+    int ox = gx_mx, oy = gx_my;
     gx_mx += dx; gx_my += dy;
     if (gx_mx < 0) gx_mx = 0;
     if (gx_my < 0) gx_my = 0;
     if (gx_w && gx_mx >= gx_w) gx_mx = gx_w - 1;
     if (gx_h && gx_my >= gx_h) gx_my = gx_h - 1;
-    gx_mdx += dx; gx_mdy += dy; gx_wheel += wheel; gx_mb = btn; gx_mmoved = 1;
+    gx_mdx += dx; gx_mdy += dy; gx_wheel += wheel; gx_mb = btn;
+    if (dx || dy || gx_mx != ox || gx_my != oy) gx_mmoved = 1;
 }
 static void gx_pump(void) {                                     /* забрать все клавиши из контроллера в очередь */
     int guard = 0;
-    while (GX_KBD_PENDING() && guard++ < 128) {
+    while (GX_KBD_PENDING() && guard++ < 256) {
         int k = key_poll();
         if (k >= 0 && gx_qt - gx_qh < 64) { gx_q[gx_qt & 63].k = k; gx_q[gx_qt & 63].mods = GX_MODS(); gx_q[gx_qt & 63].base = GX_KBASE(k); gx_qt++; }
+    }
+}
+static void gx_suspend(int on) {                                /* временно отдать экран консоли (1) или вернуть WM (0) */
+    if (!gx_ok || !gx_s[0].used) return;
+    if (on) {
+        if (gx_wm) { gx_wm = 0; GX_RELEASE_HOOK(); }
+        gx_qh = gx_qt = 0;
+    } else {
+        gx_wm = 1;
+        gx_target(0); gx_clip(0, 0, gx_w, gx_h);
+        gx_dx0 = 0; gx_dy0 = 0; gx_dx1 = gx_w; gx_dy1 = gx_h;
+        gx_flip_dirty();
+        gx_qh = gx_qt = 0; gx_mdx = gx_mdy = gx_wheel = 0; gx_mmoved = 0; gx_pmb = gx_mb;
     }
 }
 static void gx_closeall(void) {                                 /* освободить все поверхности, вернуть экран консоли */
@@ -101,6 +116,11 @@ static int lua_ext(int id, struct lval *a, int n) {
         gx_mx = gx_w / 2; gx_my = gx_h / 2; gx_mb = gx_pmb = 0; gx_wheel = gx_mdx = gx_mdy = 0; gx_mmoved = 0; gx_qh = gx_qt = 0;
         gx_flip_dirty();
         L.rv[0] = lint_v(gx_w); L.rv[1] = lint_v(gx_h); return 2;
+    }
+    if (id == G_SUSPEND) {
+        if (!gx_ok || !gx_s[0].used) { lerr("gfx is not initialized (call gfx.init() first)"); return 0; }
+        gx_suspend(n > 0 ? ltruthy(a[0]) : 1);
+        return 0;
     }
     if (!gx_ok || !gx_wm) { lerr("gfx is not initialized (call gfx.init() first)"); return 0; }
     switch (id) {
@@ -211,7 +231,7 @@ static void lua_ext_init(void) {
         {"gfx","free",G_FREE},{"gfx","target",G_TARGET},{"gfx","clip",G_CLIP},{"gfx","fill",G_FILL},{"gfx","raw",G_RAW},{"gfx","px",G_PX},
         {"gfx","text",G_TEXT},{"gfx","textw",G_TEXTW},{"gfx","blit",G_BLIT},{"gfx","scale",G_SCALE},{"gfx","grad",G_GRAD},{"gfx","round",G_ROUND},
         {"gfx","shadow",G_SHADOW},{"gfx","bmp",G_BMP},{"gfx","flip",G_FLIP},{"gfx","poll",G_POLL},{"gfx","mouse",G_MOUSE},{"gfx","setmouse",G_SETMOUSE},
-        {"gfx","mods",G_MODS},{"gfx","shot",G_SHOT},{"os","exec",O_EXEC},
+        {"gfx","mods",G_MODS},{"gfx","shot",G_SHOT},{"gfx","suspend",G_SUSPEND},{"os","exec",O_EXEC},
     };
     for (unsigned i = 0; i < sizeof xr / sizeof xr[0]; i++) lua_regfn(xr[i].lib, xr[i].name, xr[i].id);
 }

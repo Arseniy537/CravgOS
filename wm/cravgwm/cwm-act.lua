@@ -1,5 +1,5 @@
 --lua
--- cwm-act - actions for key and mouse bindings (module of cravgwm)
+-- cwm-act - actions for key and mouse bindings and rc.xml templates (module of cravgwm)
 return function(W)
   local U = W.u
   local A = {}
@@ -15,11 +15,48 @@ return function(W)
     if cmd == "" then return end
     local sp = cmd:find(" ", 1, true)
     local name, args = cmd:sub(1, (sp or #cmd + 1) - 1), sp and U.trim(cmd:sub(sp + 1)) or ""
+    if args ~= "" then
+      for _, w in ipairs(W.wins) do
+        if w.c.app == name and w.c.apply then w.c:apply(args) return w end
+      end
+    end
     return W.spawn(name, args)
+  end
+  local TPLS = {
+    default = '<cravgwm><desktops number="4"><name>web</name><name>code</name><name>files</name><name>misc</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="center"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="22" align="left"/><border width="2"/><root color="#101820"/>'
+      .. '<active title="#2a5caa" title2="#1b3f7a" text="#ffffff" border="#2a5caa"/><inactive title="#555555" text="#cccccc" border="#555555"/></theme></cravgwm>\n',
+    dark = '<cravgwm><desktops number="4"><name>web</name><name>code</name><name>files</name><name>misc</name></desktops>'
+      .. '<focus model="follow" raise="yes"/><placement policy="cascade"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="22" align="left"/><border width="2"/><root color="#0d1117"/>'
+      .. '<active title="#3b4261" title2="#1f2335" text="#c0caf5" border="#7aa2f7"/><inactive title="#1e2030" text="#565f89" border="#292e42"/>'
+      .. '<menu bg="#1a1b26" fg="#c0caf5" sel="#3b4261" selfg="#ffffff" border="#7aa2f7"/></theme></cravgwm>\n',
+    compact = '<cravgwm><desktops number="2"><name>main</name><name>work</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="cascade"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="18" align="left"/><border width="1"/>'
+      .. '<buttons size="12" gap="3"/><active title="#1e6655" text="#ffffff" border="#1e6655"/><inactive title="#383838" text="#aaaaaa" border="#383838"/></theme></cravgwm>\n',
+    classic = '<cravgwm><desktops number="4"><name>1</name><name>2</name><name>3</name><name>4</name></desktops>'
+      .. '<focus model="click" raise="yes"/><placement policy="center"/><autostart><run>cravgbg</run><run>cravgbar</run></autostart>'
+      .. '<menu file="/etc/cravgwm/menu.xml"/><theme><title height="24" align="center"/><border width="3"/>'
+      .. '<active title="#1b4f72" title2="#2874a6" text="#ffffff" border="#2874a6"/><inactive title="#4a4a4a" text="#cccccc" border="#4a4a4a"/></theme></cravgwm>\n'
+  }
+  W.tpls = {"default", "dark", "compact", "classic"}
+  function A.ApplyTemplate(c, a)
+    local nm = U.trim((a and (a.template or a.name)) or "default")
+    local fp = (a and a.file) or ("/etc/cravgwm/tpl/" .. nm .. (nm:sub(-4) == ".xml" and "" or ".xml"))
+    local data = fs.exists(fp) and fs.read(fp) or TPLS[nm]
+    if not data then W.log("unknown template: " .. nm) return end
+    if not fs.exists("/etc") then fs.mkdir("/etc") end
+    if not fs.exists("/etc/cravgwm") then fs.mkdir("/etc/cravgwm") end
+    local ok, err = fs.write("/etc/cravgwm/rc.xml", data)
+    if not ok then W.log("template write: " .. tostring(err)) return end
+    if W.menu and W.menu.reload then W.menu.reload() end
+    W.reconf = true
   end
   function A.Execute(c, a) W.run(a.command or a.execute) end
   function A.Exit() W.quit = true end
-  function A.Reconfigure() W.reconf = true end
+  function A.Reconfigure() if W.menu and W.menu.reload then W.menu.reload() end W.reconf = true end
   function A.Close(c) if c.w then W.close(c.w) end end
   function A.Raise(c) if c.w then W.raise(c.w) end end
   function A.Lower(c) if c.w then W.lower(c.w) end end

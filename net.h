@@ -2,6 +2,9 @@
    Чистый C: драйвер карты и таймер подключаются через указатели. */
 #ifndef NET_H
 #define NET_H
+#ifndef XBSS
+#define XBSS
+#endif
 #define ETH_ARP 0x0806
 #define ETH_IP  0x0800
 
@@ -10,7 +13,8 @@ static u32 nip, nmask, ngw, ndns;          /* адреса в порядке a.b
 static int (*nic_tx)(const u8 *, int);
 static int (*nic_rx)(u8 *, int);           /* длина кадра или 0 */
 static u32 (*ms_now)(void);
-static u8 txb[1600], rxb[1600], ipb[1600], udpb[1500], icb[1500];
+static int (*net_abort)(void);
+static u8 txb[1600] XBSS, rxb[1600] XBSS, ipb[1600] XBSS, udpb[1500] XBSS, icb[1500] XBSS;
 static u32 st_tx, st_rx, st_arp, st_ip, st_udp, st_dns;     /* счётчики кадров для диагностики */
 static const u8 bcast[6] = {255, 255, 255, 255, 255, 255};
 static const u8 zero6[6] = {0, 0, 0, 0, 0, 0};
@@ -84,13 +88,14 @@ static const u8 *net_mac_for(u32 dst) {
     if (!hop) return 0;
     const u8 *m = arp_find(hop);
     if (m) return m;
-    for (int t = 0; t < 4; t++) {
+    for (int t = 0; t < 3; t++) {
         arp_send(1, bcast, hop, zero6);
         u32 t0 = ms_now();
-        while (ms_now() - t0 < 600) {
+        while (ms_now() - t0 < 400) {
             net_poll();
             m = arp_find(hop);
             if (m) return m;
+            if (net_abort && net_abort()) return 0;
         }
     }
     return 0;
@@ -130,6 +135,7 @@ static int net_ping(u32 dst, u16 seq, u32 timeout, u32 *rtt) {
     while (ms_now() - t0 < timeout) {
         net_poll();
         if (ping_rx && ping_seq_rx == seq) { *rtt = ms_now() - t0; return 0; }
+        if (net_abort && net_abort()) return -1;
     }
     return -1;
 }
@@ -182,7 +188,11 @@ static void dhcp_send(int type) {
 }
 static int dhcp_wait(int want, u32 ms) {
     u32 t0 = ms_now();
-    while (ms_now() - t0 < ms) { net_poll(); if (dhcp_got == want) return 1; }
+    while (ms_now() - t0 < ms) {
+        net_poll();
+        if (dhcp_got == want) return 1;
+        if (net_abort && net_abort()) return -1;
+    }
     return 0;
 }
 static int net_dhcp_ex(int tries, u32 ms) {
@@ -191,10 +201,14 @@ static int net_dhcp_ex(int tries, u32 ms) {
     for (int t = 0; t < tries; t++) {
         dhcp_got = 0;
         dhcp_send(1);
-        if (!dhcp_wait(2, ms)) continue;
+        int w = dhcp_wait(2, ms);
+        if (w < 0) break;
+        if (!w) continue;
         dhcp_send(3);
         dhcp_got = 0;
-        if (dhcp_wait(5, ms)) {
+        w = dhcp_wait(5, ms);
+        if (w < 0) break;
+        if (w) {
             nip = dhcp_yi;
             nmask = dhcp_mask_ ? dhcp_mask_ : 0xFFFFFF00u;
             ngw = dhcp_gw_; ndns = dhcp_dns_;
@@ -234,7 +248,7 @@ static u16 tcp_lport = 40000, tcp_rport;
 static u8 tcp_dmac[6];
 static u8 *tcp_buf;
 static int tcp_blen, tcp_bmax, tcp_fin, tcp_rst, tcp_overflow;
-static u8 tcp_seg[1500];
+static u8 tcp_seg[1500] XBSS;
 
 static u16 tcp_sum(u32 src, u32 dst, const u8 *s, int len) {
     u32 sum = (src >> 16) + (src & 0xFFFF) + (dst >> 16) + (dst & 0xFFFF) + 6 + len;
@@ -257,8 +271,9 @@ static void tcp_emit(u8 flags, const u8 *data, int len) {
     __asm__ volatile("" : : "r"(res) : "memory");
     (void)res;
 }
-static int tcp_connect(u32 ip, u16 port) {
+static int tcp_connect_ex(u32 ip, u16 port, int tries, u32 ms) {
     tcp_state = TCP_CLOSED; tcp_fin = tcp_rst = tcp_overflow = 0; tcp_blen = 0;
+    if (net_abort && net_abort()) return -2;
     const u8 *m = net_mac_for(ip);
     if (!m) return -2;
     for (int i = 0; i < 6; i++) tcp_dmac[i] = m[i];
@@ -267,18 +282,19 @@ static int tcp_connect(u32 ip, u16 port) {
     tcp_iss = ms_now() * 64000u + 12345u + ip;
     tcp_snd_una = tcp_snd_nxt = tcp_iss; tcp_rcv_nxt = 0;
     tcp_state = TCP_SYN;
-    for (int t = 0; t < 4; t++) {
+    for (int t = 0; t < tries; t++) {
         tcp_emit(0x02, 0, 0);
         u32 t0 = ms_now();
-        while (ms_now() - t0 < 1500) {
+        while (ms_now() - t0 < ms) {
             net_poll();
             if (tcp_state == TCP_ESTAB) return 0;
-            if (tcp_rst) { tcp_state = TCP_CLOSED; return -1; }
+            if (tcp_rst || (net_abort && net_abort())) { tcp_state = TCP_CLOSED; return -1; }
         }
     }
     tcp_state = TCP_CLOSED;
     return -1;
 }
+static int tcp_connect(u32 ip, u16 port) { return tcp_connect_ex(ip, port, 3, 1200); }
 static void tcp_in(u32 src, u32 dst, const u8 *seg, int len) {
     if (len < 20 || tcp_state == TCP_CLOSED) return;
     if (src != tcp_rip || rd16(seg) != tcp_rport || rd16(seg + 2) != tcp_lport) return;
@@ -324,7 +340,7 @@ static int tcp_send(const u8 *data, int len) {
             u32 t0 = ms_now();
             while (ms_now() - t0 < 1000) {
                 net_poll();
-                if (tcp_rst || tcp_state == TCP_CLOSED) return -1;
+                if (tcp_rst || tcp_state == TCP_CLOSED || (net_abort && net_abort())) return -1;
                 if ((int)(tcp_snd_una - tcp_snd_nxt) >= 0) { ok = 1; break; }
             }
         }
@@ -338,7 +354,10 @@ static void tcp_close(void) {
         tcp_state = TCP_FINW;
         tcp_emit(0x11, 0, 0); tcp_snd_nxt++;
         u32 t0 = ms_now();
-        while (ms_now() - t0 < 800) { net_poll(); if ((int)(tcp_snd_una - tcp_snd_nxt) >= 0) break; }
+        while (ms_now() - t0 < 800) {
+            net_poll();
+            if ((int)(tcp_snd_una - tcp_snd_nxt) >= 0 || tcp_rst || (net_abort && net_abort())) break;
+        }
     }
     tcp_state = TCP_CLOSED;
 }
@@ -390,22 +409,22 @@ static int dns_build(const char *name, u8 *q) {           /* возвращае�
     q[i++] = 0; be16(q + i, 1); be16(q + i + 2, 1);
     return i + 4;
 }
-static u8 dns_tcpbuf[1400];
+static u8 dns_tcpbuf[1400] XBSS;
 static int dns_tcp(u32 srv, const u8 *q, int qlen) {      /* тот же запрос по TCP/53; 1 если получен ответ */
     u8 *sbuf = tcp_buf; int smax = tcp_bmax;
     int prev = dns_done, prc = dns_rcode, got = 0;
     dns_done = 0;
     tcp_buf = dns_tcpbuf; tcp_bmax = sizeof dns_tcpbuf;
-    if (tcp_connect(srv, 53) == 0) {
+    if (tcp_connect_ex(srv, 53, 2, 700) == 0) {
         u8 m[2 + 300];
         be16(m, qlen);
         for (int i = 0; i < qlen; i++) m[2 + i] = q[i];
         if (tcp_send(m, qlen + 2) == 0) {
             u32 t0 = ms_now();
-            while (ms_now() - t0 < 2500) {
+            while (ms_now() - t0 < 1500) {
                 net_poll();
                 if (tcp_blen >= 2) { int rl = rd16(tcp_buf); if (tcp_blen >= 2 + rl) { dns_parse(tcp_buf + 2, rl); break; } }
-                if (tcp_fin || tcp_rst || tcp_state == TCP_CLOSED) break;
+                if (tcp_fin || tcp_rst || tcp_state == TCP_CLOSED || (net_abort && net_abort())) break;
             }
         }
         tcp_close();
@@ -448,19 +467,26 @@ static u32 net_dns(const char *name) {
         for (int k = 0; k < ns; k++) if (servers[k] == cand[c]) dup = 1;
         if (cand[c] && !dup) servers[ns++] = cand[c];
     }
-    int nx = 0, err = 0, nodata = 0, silent = 0, noarp = 0;
+    int nx = 0, err = 0, nodata = 0, silent = 0, noarp = 0, gw_noarp = 0;
     for (int si = 0; si < ns; si++) {
+        if (net_abort && net_abort()) { dns_why = 3; return 0; }
         u32 srv = servers[si];
+        if (gw_noarp && (srv & nmask) != (nip & nmask)) continue;
         dns_used = srv;
         const u8 *m = net_mac_for(srv);
-        if (!m) { noarp = 1; continue; }
+        if (!m) { noarp = 1; if (ngw && (srv == ngw || (srv & nmask) != (nip & nmask))) gw_noarp = 1; continue; }
         dns_done = 0; dns_ip = 0;
         for (int t = 0; t < (si < 2 ? 2 : 1) && !dns_done; t++) {
             udp_send(m, nip, srv, dns_port, 53, q, ql);
             u32 t0 = ms_now();
-            while (ms_now() - t0 < 1000) { net_poll(); if (dns_done) break; }
+            while (ms_now() - t0 < 700) {
+                net_poll();
+                if (dns_done) break;
+                if (net_abort && net_abort()) { dns_why = 3; return 0; }
+            }
         }
         if (dns_done != 1 && si < 2) dns_tcp(srv, q, ql);        /* UDP молчит или ошибка: пробуем TCP */
+        if (net_abort && net_abort()) { dns_why = 3; return 0; }
         if (dns_done == 1) { dns_why = 0; return dns_ip; }
         if (dns_done == 2) { if (dns_rcode == 3) nx = 1; else if (dns_rcode > 0) err = 1; else nodata = 1; }
         else silent = 1;

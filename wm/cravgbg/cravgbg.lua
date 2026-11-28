@@ -1,17 +1,82 @@
 --lua
 --needs cravgwm
--- cravgbg - wallpaper in the style of feh: solid, gradient, pattern, BMP image. Config: /etc/cravgwm/cravgbg.xml
+-- cravgbg - wallpaper in the style of feh: solid, gradient, pattern, BMP image, live switching. Config: /etc/cravgwm/cravgbg.xml
 local M = {single = true}
+local PRESETS = {
+  {mode = "gradient", from = "#0b1d3a", to = "#3a6ea5", direction = "vertical"},
+  {mode = "gradient", from = "#1a102b", to = "#6b2d5c", direction = "vertical"},
+  {mode = "gradient", from = "#0a2a24", to = "#1f7a68", direction = "horizontal"},
+  {mode = "pattern", pattern = "grid", color = "#141824", to = "#22304a", size = "32"},
+  {mode = "solid", color = "#182230"}
+}
 function M.new(W, args)
   local U = W.u
-  local root = W.ui.config("cravgbg")
-  local a = (root and root.a) or {mode = "gradient", color = "0x0B1D3A", to = "0x3A6EA5", direction = "vertical"}
-  local c = {title = "cravgbg", kind = "desktop", class = "cravgbg", w = W.sw, h = W.sh, mode = a.mode or "solid"}
-  local img
-  if c.mode == "image" or c.mode == "tile" then
-    local s, e = gfx.bmp(a.file or "")
-    if not s then W.log("cravgbg: " .. tostring(e)) c.mode = "solid" else img = s end
+  local a, img, pidx = {mode = "gradient", from = "0x0B1D3A", to = "0x3A6EA5", direction = "vertical"}, nil, 1
+  local c = {title = "cravgbg", kind = "desktop", class = "cravgbg", w = W.sw, h = W.sh, mode = "gradient"}
+  local function save_cfg()
+    if not fs.exists("/etc") then fs.mkdir("/etc") end
+    if not fs.exists("/etc/cravgwm") then fs.mkdir("/etc/cravgwm") end
+    local at = {'mode="' .. (a.mode or "solid") .. '"'}
+    for _, k in ipairs({"color", "from", "to", "direction", "pattern", "size", "file", "scale"}) do
+      if a[k] then at[#at + 1] = k .. '="' .. tostring(a[k]) .. '"' end
+    end
+    fs.write("/etc/cravgwm/cravgbg.xml", "<cravgbg " .. table.concat(at, " ") .. "/>\n")
   end
+  local function load_cfg()
+    local root = W.ui.config("cravgbg")
+    a = (root and root.a) or {mode = "gradient", color = "0x0B1D3A", to = "0x3A6EA5", direction = "vertical"}
+    c.mode = a.mode or "solid"
+    if img then gfx.free(img) img = nil end
+    if c.mode == "image" or c.mode == "tile" then
+      local s, e = gfx.bmp(a.file or "")
+      if not s then W.log("cravgbg: " .. tostring(e)) c.mode = "solid" else img = s end
+    end
+  end
+  function c:apply(arg)
+    arg = U.trim(arg or "")
+    if arg == "" or arg == "reload" then
+      load_cfg()
+    elseif arg == "next" then
+      pidx = pidx % #PRESETS + 1
+      local p = PRESETS[pidx]
+      a = {}
+      for k, v in pairs(p) do a[k] = v end
+      self.mode = a.mode
+      if img then gfx.free(img) img = nil end
+      save_cfg()
+    else
+      local parts = U.split(arg, " ")
+      local op = parts[1]
+      if op == "gradient" and parts[2] then
+        a = {mode = "gradient", from = parts[2], to = parts[3] or "#000000", direction = parts[4] or "vertical"}
+        self.mode = "gradient"
+        if img then gfx.free(img) img = nil end
+        save_cfg()
+      elseif op == "solid" and parts[2] then
+        a = {mode = "solid", color = parts[2]}
+        self.mode = "solid"
+        if img then gfx.free(img) img = nil end
+        save_cfg()
+      elseif op == "pattern" and parts[2] then
+        a = {mode = "pattern", pattern = parts[2], color = parts[3] or "#141824", to = parts[4] or "#22304a", size = parts[5] or "32"}
+        self.mode = "pattern"
+        if img then gfx.free(img) img = nil end
+        save_cfg()
+      else
+        local mode = (op == "tile" and "tile") or "image"
+        local fp = (op == "image" or op == "tile") and (parts[2] or "") or arg
+        local s, e = gfx.bmp(fp)
+        if not s then W.log("cravgbg: " .. tostring(e)) return end
+        if img then gfx.free(img) end
+        img = s
+        a = {mode = mode, file = fp, scale = parts[3] or "stretch"}
+        self.mode = mode
+        save_cfg()
+      end
+    end
+    if self.win then self.win.cdirty = true W.damage(0, 0, W.sw, W.sh) end
+  end
+  function c:close() if img then gfx.free(img) img = nil end end
   function c:draw(s, w, h)
     local c1, c2 = U.color(a.color or a.from, 0x203040), U.color(a.to, 0x000000)
     if self.mode == "gradient" then gfx.grad(0, 0, w, h, c1, c2, a.direction ~= "horizontal")
@@ -37,6 +102,7 @@ function M.new(W, args)
       end
     else gfx.fill(0, 0, w, h, c1) end
   end
+  c:apply(args)
   return c
 end
 return M

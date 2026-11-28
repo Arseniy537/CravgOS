@@ -5,6 +5,7 @@ return function(W)
   W.menu = M
   local defs
   local n = 0
+  function M.reload() defs = nil end
   local function scan(node)                    -- id -> <menu>; вложенные меню получают собственные id
     for _, c in ipairs(node.k) do
       if c.tag == "menu" then
@@ -20,6 +21,19 @@ return function(W)
         if not w.kind then l[#l + 1] = {label = (w.icon and "[" or "") .. w.title .. (w.icon and "]" or ""), fn = function() if w.icon then W.restore(w) else W.raise(w) W.focus_win(w) end if w.desk ~= 0 then W.goto(w.desk) end end} end
       end
       return l
+    elseif id == "tpl-menu" then
+      local seen = {}
+      for _, f in ipairs(fs.list("/etc/cravgwm/tpl") or {}) do
+        if f:sub(-4) == ".xml" then
+          local nm = f:sub(1, -5)
+          seen[nm] = true
+          l[#l + 1] = {label = nm, acts = {{name = "ApplyTemplate", a = {template = nm, file = "/etc/cravgwm/tpl/" .. f}}}}
+        end
+      end
+      for _, nm in ipairs(W.tpls or {"default", "dark", "compact", "classic"}) do
+        if not seen[nm] then l[#l + 1] = {label = nm, acts = {{name = "ApplyTemplate", a = {template = nm}}}} end
+      end
+      return l
     elseif id == "client-menu" then
       local w = ctx.w
       local function a(name, to) return function() W.do_acts({{name = name, a = {to = to}}}, {w = w}) end end
@@ -29,12 +43,15 @@ return function(W)
     local node = defs[id]
     if not node then
       if id == "root-menu" then
-        local function act(n, cmd) return {{name = n, a = cmd and {command = cmd} or {}}} end
+        local function act(nm, cmd) return {{name = nm, a = cmd and {command = cmd} or {}}} end
         local it = {}
         if fs.exists("/apps/cravgterm") then it[#it + 1] = {label = "Terminal", acts = act("Execute", "cravgterm")} end
         if fs.exists("/apps/cravgfm") then it[#it + 1] = {label = "Files", acts = act("Execute", "cravgfm")} end
+        if fs.exists("/apps/cravgedit") then it[#it + 1] = {label = "Editor", acts = act("Execute", "cravgedit")} end
+        if fs.exists("/apps/cravgpaint") then it[#it + 1] = {label = "Paint", acts = act("Execute", "cravgpaint")} end
         if fs.exists("/apps/cravgrun") then it[#it + 1] = {label = "Launcher", acts = act("Execute", "cravgrun")} end
         if #it > 0 then it[#it + 1] = {sep = true} end
+        it[#it + 1] = {label = "Templates  >", sub = "tpl-menu"}
         it[#it + 1] = {label = "Windows  >", sub = "client-list-menu"}
         it[#it + 1] = {sep = true}
         it[#it + 1] = {label = "Exit", acts = act("Exit")}

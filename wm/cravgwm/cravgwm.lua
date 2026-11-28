@@ -1,5 +1,5 @@
 --lua
---needs cravgbar cravgbg cravgrun cravgterm cravgfm cwm-doc
+--needs cravgbar cravgbg cravgrun cravgterm cravgfm cravgedit cravgpaint cwm-doc
 -- cravgwm - floating window manager in the style of Openbox (configuration: /etc/cravgwm/*.xml)
 if CWM then return CWM end
 local W = {}
@@ -73,7 +73,7 @@ while not W.quit do
   end
   local ok5, e5 = pcall(W.render)
   if not ok5 then W.log("render: " .. tostring(e5)) W.dx = nil end
-  os.sleep(5)
+  if n == 0 then os.sleep(W.comp and W.comp.pending() and 4 or 2) end
 end
 gfx.close()
 CWM = nil

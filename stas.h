@@ -19,6 +19,9 @@
  */
 #ifndef STAS_H
 #define STAS_H
+#ifndef XBSS
+#define XBSS
+#endif
 #define STAS_REPO_DEFAULT "https://raw.githubusercontent.com/Arseniy537/CravgOS/main/stas-repo"
 #define STAS_DIR "/apps"
 #define STAS_MAXL 160
@@ -361,15 +364,45 @@ static const char STAS_PKG_TOWER[] =
     "end\n"
 ;
 
+static int stas_aborted, stas_last_http_err;
 #ifndef STAS_NO_HTTP
+static u32 stas_prog_ms;
+static int stas_prog_dots;
+static void stas_prog_cb(int got, int total) {
+    (void)got; (void)total;
+    u32 now = ms_now();
+    if (now - stas_prog_ms >= 400) {
+        stas_prog_ms = now;
+        putc('.');
+        if (++stas_prog_dots % 60 == 0) putc('\n');
+    }
+}
 static int stas_http_fetch(const char *url, const char **body, int *len) {
-    if (!net_ready()) { stas_err = "no network"; return -1; }
+    int (*prev_na)(void) = net_abort;
+    net_abort = br_abort;
+    stas_aborted = 0; stas_last_http_err = 0;
+    if (!net_ready()) {
+        net_abort = prev_na;
+        if (br_abort()) { stas_aborted = 1; stas_err = "cancelled"; }
+        else stas_err = "no network";
+        return -1;
+    }
     http_buf = http_data; http_max = sizeof http_data - 1; http_abort = br_abort;
+    http_progress = stas_prog_cb;
+    stas_prog_ms = ms_now(); stas_prog_dots = 0;
     br_res.url[0] = 0;
     int r = http_get_follow(url, &br_res);
+    http_progress = 0;
     http_abort = 0;
-    if (r < 0) { stas_err = http_err_str(r); return -1; }
-    if (br_res.status != 200) { stas_err = "server did not answer 200 OK"; return -1; }
+    net_abort = prev_na;
+    if (stas_prog_dots > 0) putc('\n');
+    if (r < 0) {
+        stas_last_http_err = r;
+        if (r == HE_ABORT) stas_aborted = 1;
+        stas_err = http_err_str(r);
+        return -1;
+    }
+    if (br_res.status != 200) { stas_last_http_err = br_res.status; stas_err = "server did not answer 200 OK"; return -1; }
     if (br_res.truncated) { stas_err = "reply is too large"; return -1; }
     *body = (const char *)http_data + br_res.body_off; *len = br_res.body_len;
     return 0;
@@ -391,7 +424,7 @@ static int stas_okname(const char *s) {            /* a-z 0-9 - _ , до 15 си
     }
     return n > 0 && n < FS_NAME;
 }
-static int stas_nosync;
+static int stas_nosync, stas_dirty, stas_install_depth;
 static void stas_mkdir(void) { if (fs_resolve(STAS_DIR) < 0) fs_create(STAS_DIR, 1); }
 static int stas_node(const char *name) {           /* номер файла /apps/<name> или -1 */
     char p[40]; int n = 0; p[0] = 0;
@@ -409,7 +442,8 @@ static int stas_put(const char *name, const char *d, int len) {
     if (fsn[i].dir) return FS_EISDIR;
     if (len > FS_FSZ) return FS_EBAD;
     fs_write(i, d, len, 0);
-    if (!stas_nosync) fs_sync();
+    stas_dirty = 1;
+    if (!stas_nosync) { fs_sync(); stas_dirty = 0; }
     return 0;
 }
 static void stas_puti(int v) {
@@ -429,34 +463,42 @@ static void stas_repo_get(char *out, int max) {
     while (n > 0 && out[n - 1] == '/') n--;
     out[n] = 0;
 }
+static int stas_offline_get(const char *file, const char **b, int *n) {
+    if (streq(file, "index.txt")) {
+        static char off_idx[FS_FSZ + 1] XBSS; int m = 0; off_idx[0] = 0;
+        stas_cat(off_idx, &m, sizeof off_idx, STAS_OFFLINE_INDEX); stas_cat(off_idx, &m, sizeof off_idx, STAS_LUA_INDEX);
+        *b = off_idx; *n = m; return 0;
+    }
+    for (int q = 0; q < STAS_LUA_NPKGS; q++)
+        if (streq(file, STAS_LUA_PKGS[q].file)) { *b = STAS_LUA_PKGS[q].data; *n = slen(*b); return 0; }
+    if (streq(file, "bench.stp")) { *b = STAS_PKG_BENCH; *n = slen(*b); return 0; }
+    if (streq(file, "math.stp")) { *b = STAS_PKG_MATH; *n = slen(*b); return 0; }
+    if (streq(file, "dice.stp")) { *b = STAS_PKG_DICE; *n = slen(*b); return 0; }
+    if (streq(file, "fact.stp")) { *b = STAS_PKG_FACT; *n = slen(*b); return 0; }
+    if (streq(file, "guess.stp")) { *b = STAS_PKG_GUESS; *n = slen(*b); return 0; }
+    if (streq(file, "nim.stp")) { *b = STAS_PKG_NIM; *n = slen(*b); return 0; }
+    if (streq(file, "tower.stp")) { *b = STAS_PKG_TOWER; *n = slen(*b); return 0; }
+    return -1;
+}
 static int stas_get(const char *file, const char **b, int *n) {
     char url[256], repo[200]; int k = 0; url[0] = 0;
     stas_repo_get(repo, sizeof repo);
     if (streq(repo, "offline") || streq(repo, "builtin")) {
-        if (streq(file, "index.txt")) {
-            static char off_idx[FS_FSZ + 1]; int m = 0; off_idx[0] = 0;
-            stas_cat(off_idx, &m, sizeof off_idx, STAS_OFFLINE_INDEX); stas_cat(off_idx, &m, sizeof off_idx, STAS_LUA_INDEX);
-            *b = off_idx; *n = m; return 0;
-        }
-        for (int q = 0; q < STAS_LUA_NPKGS; q++)
-            if (streq(file, STAS_LUA_PKGS[q].file)) { *b = STAS_LUA_PKGS[q].data; *n = slen(*b); return 0; }
-        if (streq(file, "bench.stp")) { *b = STAS_PKG_BENCH; *n = slen(*b); return 0; }
-        if (streq(file, "math.stp")) { *b = STAS_PKG_MATH; *n = slen(*b); return 0; }
-        if (streq(file, "dice.stp")) { *b = STAS_PKG_DICE; *n = slen(*b); return 0; }
-        if (streq(file, "fact.stp")) { *b = STAS_PKG_FACT; *n = slen(*b); return 0; }
-        if (streq(file, "guess.stp")) { *b = STAS_PKG_GUESS; *n = slen(*b); return 0; }
-        if (streq(file, "nim.stp")) { *b = STAS_PKG_NIM; *n = slen(*b); return 0; }
-        if (streq(file, "tower.stp")) { *b = STAS_PKG_TOWER; *n = slen(*b); return 0; }
+        if (stas_offline_get(file, b, n) == 0) return 0;
         stas_err = "package not in offline repository";
         return -1;
     }
     stas_cat(url, &k, sizeof url, repo); stas_cat(url, &k, sizeof url, "/"); stas_cat(url, &k, sizeof url, file);
     puts("GET "); puts(url); putc('\n');
-    stas_err = "unknown error";
+    stas_err = "unknown error"; stas_aborted = 0; stas_last_http_err = 0;
     int r = stas_fetch(url, b, n);
     if (r < 0) {
+        if (!stas_aborted && stas_node(".repo") < 0 && stas_last_http_err <= 0 && stas_offline_get(file, b, n) == 0) {
+            puts("stas: online repo unreachable, using built-in offline "); puts(file); putc('\n');
+            return 0;
+        }
         puts("stas: download failed: "); puts(stas_err); putc('\n');
-        puts("Tip: run 'stas repo host' (10.0.2.2:8000) or 'stas repo offline' (built-in packages)\n");
+        if (!stas_aborted) puts("Tip: run 'stas repo host' (10.0.2.2:8000) or 'stas repo offline' (built-in packages)\n");
     }
     return r;
 }
@@ -579,7 +621,7 @@ static void stas_install_needs(const char *name) {
     if (!stas_hdr(i, "needs", line, sizeof line)) return;
     char *a = line, *dep;
     stas_needs_depth++;
-    while ((dep = tok(&a))) {
+    while ((dep = tok(&a)) && !stas_aborted) {
         if (stas_node(dep) >= 0) continue;
         puts("Installing dependency: "); puts(dep); putc('\n');
         stas_install(dep);
@@ -598,6 +640,7 @@ static void stas_install_bundle(const char *name, const struct stas_ent *e, cons
     int p = 0, files = 0, entry = 0;
     while (p < n && b[p] != '\n') p++;
     p++;
+    int prev_ns = stas_nosync;
     stas_nosync = 1;
     while (p < n) {
         if (!(b[p] == '@' && p + 3 < n && b[p + 1] == '@' && b[p + 2] == ' ')) { puts("stas: damaged bundle\n"); break; }
@@ -616,8 +659,8 @@ static void stas_install_bundle(const char *name, const struct stas_ent *e, cons
         files++; p += sz;
         if (p < n && b[p] == '\n') p++;
     }
-    stas_nosync = 0;
-    fs_sync();
+    stas_nosync = prev_ns;
+    if (!stas_nosync && stas_dirty) { fs_sync(); stas_dirty = 0; }
     if (!files) return;
     puts("Installed "); puts(name); puts(" ("); putu((u32)files); puts(files == 1 ? " file, " : " files, "); putu((u32)n); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
     if (!entry) puts("stas: warning - the bundle has no file named like the package\n");
@@ -630,47 +673,56 @@ static void stas_install(const char *name) {
     if (f < 0) return;
     if (!f) { puts("stas: no such package in the index: "); puts(name); puts("   (try: stas update, stas list)\n"); return; }
     if (cmd_find(name)) { puts("stas: this name clashes with a built-in command\n"); return; }
+    int prev_ns = stas_nosync;
+    if (stas_install_depth == 0) { stas_dirty = 0; stas_aborted = 0; }
+    stas_nosync = 1;
+    stas_install_depth++;
     char fn[24]; int k = 0; fn[0] = 0;
     stas_cat(fn, &k, sizeof fn, name); stas_cat(fn, &k, sizeof fn, ".stp");
     const char *b; int n;
-    if (stas_get(fn, &b, &n) < 0) return;
-    if (stas_is_bundle(b, n)) { stas_install_bundle(name, &e, b, n); return; }
-    if (n > FS_FSZ) { puts("stas: package is too big (max "); putu(FS_FSZ); puts(" bytes)\n"); return; }
+    if (stas_get(fn, &b, &n) >= 0) {
+        if (stas_is_bundle(b, n)) { stas_install_bundle(name, &e, b, n); }
+        else if (n > FS_FSZ) { puts("stas: package is too big (max "); putu(FS_FSZ); puts(" bytes)\n"); }
+        else {
+            /* Normalize CRLF -> LF for Windows repository compatibility */
+            static char norm_buf[FS_FSZ + 1] XBSS;
+            int norm_n = 0;
+            for (int i = 0; i < n && norm_n < FS_FSZ; i++) {
+                if (b[i] == '\r' && i + 1 < n && b[i + 1] == '\n') continue;
+                norm_buf[norm_n++] = b[i];
+            }
+            norm_buf[norm_n] = 0;
 
-    /* Normalize CRLF -> LF for Windows repository compatibility */
-    static char norm_buf[FS_FSZ + 1];
-    int norm_n = 0;
-    for (int i = 0; i < n && norm_n < FS_FSZ; i++) {
-        if (b[i] == '\r' && i + 1 < n && b[i + 1] == '\n') continue;
-        norm_buf[norm_n++] = b[i];
-    }
-    norm_buf[norm_n] = 0;
+            char hx[65], norm_hx[65];
+            stas_sha_hex((const u8 *)b, n, hx);
+            stas_sha_hex((const u8 *)norm_buf, norm_n, norm_hx);
 
-    char hx[65], norm_hx[65];
-    stas_sha_hex((const u8 *)b, n, hx);
-    stas_sha_hex((const u8 *)norm_buf, norm_n, norm_hx);
+            const char *install_data = b;
+            int install_len = n;
+            int ok = 0;
 
-    const char *install_data = b;
-    int install_len = n;
-
-    if (n == e.size && stas_hexeq(hx, e.hash)) {
-        install_data = b;
-        install_len = n;
-    } else if (norm_n == e.size && stas_hexeq(norm_hx, e.hash)) {
-        install_data = norm_buf;
-        install_len = norm_n;
-    } else {
-        if (n != e.size && norm_n != e.size) {
-            puts("stas: size differs from the index - package rejected\n");
-            return;
+            if (n == e.size && stas_hexeq(hx, e.hash)) {
+                install_data = b; install_len = n; ok = 1;
+            } else if (norm_n == e.size && stas_hexeq(norm_hx, e.hash)) {
+                install_data = norm_buf; install_len = norm_n; ok = 1;
+            } else if (n != e.size && norm_n != e.size) {
+                puts("stas: size differs from the index - package rejected\n");
+            } else {
+                puts("stas: SHA-256 mismatch - package rejected\n  index: "); puts(e.hash); puts("\n  file:  "); puts(hx); putc('\n');
+            }
+            if (ok) {
+                int r = stas_put(name, install_data, install_len);
+                if (r < 0) fs_err(r);
+                else {
+                    puts("Installed "); puts(name); puts(" ("); putu(install_len); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
+                    stas_install_needs(name);
+                }
+            }
         }
-        puts("stas: SHA-256 mismatch - package rejected\n  index: "); puts(e.hash); puts("\n  file:  "); puts(hx); putc('\n');
-        return;
     }
-    int r = stas_put(name, install_data, install_len);
-    if (r < 0) { fs_err(r); return; }
-    puts("Installed "); puts(name); puts(" ("); putu(install_len); puts(" B, sha256 ok). Run it: "); puts(name); putc('\n');
-    stas_install_needs(name);
+    stas_install_depth--;
+    stas_nosync = prev_ns;
+    if (stas_install_depth == 0 && !stas_nosync && stas_dirty) { fs_sync(); stas_dirty = 0; }
 }
 static void stas_remove(const char *name) {
     if (streq(name, "wm")) name = "cravgwm";
@@ -691,7 +743,7 @@ static void stas_remove(const char *name) {
 
 /* ---------- Интерпретатор скриптов ---------- */
 static int stas_v[26];
-static char stas_src[FS_FSZ + 1];
+static char stas_src[FS_FSZ + 1] XBSS;
 static char *stas_ln[STAS_MAXL];
 static int stas_nl;
 

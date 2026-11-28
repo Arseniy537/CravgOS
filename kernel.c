@@ -17,6 +17,7 @@ static void cpuid(u32 leaf, u32 *a, u32 *b, u32 *c, u32 *d) {
     __asm__ volatile("cpuid":"=a"(*a),"=b"(*b),"=c"(*c),"=d"(*d):"a"(leaf),"c"(0));
 }
 
+#define XBSS __attribute__((section(".bss.xbig")))
 static int gx_ok;
 static int fbc_force;
 static void fbc_sync(void);
@@ -327,8 +328,9 @@ static void ru_init(void) {                        /* ЙЦУКЕН в кодов
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) { map_ru[t[i].sc] = t[i].lo; smap_ru[t[i].sc] = t[i].up; }
     smap_ru[0x03] = '"'; smap_ru[0x04] = '#'; smap_ru[0x05] = ';'; smap_ru[0x07] = ':'; smap_ru[0x08] = '?';
 }
+static void vbox_clip_poll(void);
 static int key_poll(void) {            /* -1 если клавиши нет */
-    now_ms(); fbc_sync();
+    now_ms(); fbc_sync(); vbox_clip_poll();
     u8 st = inb(0x64);
     if (!(st & 1)) return -1;
     u8 sc = inb(0x60);
@@ -589,7 +591,7 @@ struct disk_super {
 #define DISK_FSN_SECS 8
 #define DISK_DATA_LBA 16        /* данные файлов (формат 2) */
 static struct disk_super disk_sp;
-static u8 disk_sec_buf[512 * DISK_FSN_SECS];
+static u8 disk_sec_buf[512 * DISK_FSN_SECS] XBSS;
 
 static int disk_save(void) {
     if (!ata_present) return -1;
@@ -674,7 +676,6 @@ static int disk_load(void) {
     if (migrated) disk_save();                          /* сразу записываем в новом формате */
     return 1;
 }
-#define XBSS __attribute__((section(".bss.xbig")))
 #include "net.h"
 #include "tls.h"
 #define HTTP_TLS 1
@@ -952,8 +953,8 @@ struct rxd { u32 lo, hi; u16 len, csum; u8 status, err; u16 spec; } __attribute_
 struct txd { u32 lo, hi; u16 len; u8 cso, cmd, status, css; u16 spec; } __attribute__((packed));
 static volatile struct rxd rxr[E1000_RX] __attribute__((aligned(128)));
 static volatile struct txd txr[E1000_TX] __attribute__((aligned(128)));
-static u8 rxbuf[E1000_RX][2048] __attribute__((aligned(128)));
-static u8 txbuf[E1000_TX][2048] __attribute__((aligned(128)));
+static u8 rxbuf[E1000_RX][2048] XBSS __attribute__((aligned(128)));
+static u8 txbuf[E1000_TX][2048] XBSS __attribute__((aligned(128)));
 static volatile u32 *nicm;
 static u32 rx_cur, tx_cur;
 static u32 nr(u32 reg) { return nicm[reg / 4]; }
@@ -1042,6 +1043,299 @@ found:
     nw(0x0400, (1u << 1) | (1u << 3) | (0x0Fu << 4) | (0x40u << 12));
     nw(0x0410, 0x0060200A);
     return 1;
+}
+
+/* ---------- Буфер обмена + VirtualBox VMMDev Shared Clipboard ---------- */
+static char clip_buf[FS_FSZ] XBSS;
+static int clip_len;
+static int lua_getclip(char *buf, int max);
+static void lua_setclip(const char *s, int len);
+
+#define VMMDEV_REQ_VERSION           0x10001u
+#define VMMDEV_REQ_REPORT_GUESTINFO  50u
+#define VMMDEV_REQ_HGCM_CONNECT      60u
+#define VMMDEV_REQ_HGCM_CALL64       63u
+#define VMMDEV_HGCM_LOC_HOST_EXIST   2u
+#define VMMDEV_HGCM_PARM_32BIT       1u
+#define VMMDEV_HGCM_PARM_LINADDR     4u
+#define VMMDEV_HGCM_PARM_LINADDR_IN  5u
+#define VMMDEV_HGCM_PARM_LINADDR_OUT 6u
+#define VBOX_HGCM_REQ_DONE           1u
+#define VINF_HGCM_ASYNC_EXECUTE      2903
+
+#define VBOX_SHCL_FN_GET_HOST_MSG    1u
+#define VBOX_SHCL_FN_FORMATS         2u
+#define VBOX_SHCL_FN_READ_DATA       3u
+#define VBOX_SHCL_FN_WRITE_DATA      4u
+#define VBOX_SHCL_HOST_MSG_QUIT      1u
+#define VBOX_SHCL_HOST_MSG_READ      2u
+#define VBOX_SHCL_HOST_MSG_FORMATS   3u
+#define VBOX_SHCL_FMT_UNICODETEXT    1u
+
+struct vmm_hdr {
+    u32 size, version, req_type;
+    int rc;
+    u32 reserved1, f_req;
+} __attribute__((packed));
+
+struct vmm_hgcm_hdr {
+    struct vmm_hdr h;
+    u32 flags;
+    int result;
+} __attribute__((packed));
+
+struct vmm_hgcm_connect {
+    struct vmm_hgcm_hdr hdr;
+    u32 loc_type;
+    char name[128];
+    u32 client_id;
+} __attribute__((packed));
+
+struct vmm_hgcm_parm64 {
+    u32 type;
+    union {
+        u32 u32;
+        u64 u64;
+        struct { u32 size; u64 addr; } __attribute__((packed)) ptr;
+    } __attribute__((packed)) u;
+} __attribute__((packed));
+
+struct vmm_hgcm_call {
+    struct vmm_hgcm_hdr hdr;
+    u32 client_id, fn, cparms;
+    struct vmm_hgcm_parm64 p[3];
+} __attribute__((packed));
+
+struct vmm_guest_info {
+    struct vmm_hdr h;
+    u32 iface_ver, os_type;
+} __attribute__((packed));
+
+static u16 vmm_port;
+static u32 vbox_clip_cid;
+static int vbox_msg_pending;
+static struct vmm_guest_info vmm_ginfo __attribute__((aligned(16)));
+static struct vmm_hgcm_connect vbox_conn_req __attribute__((aligned(16)));
+static struct vmm_hgcm_call vbox_call_req __attribute__((aligned(16)));
+static struct vmm_hgcm_call vbox_msg_req __attribute__((aligned(16)));
+static u16 vbox_u16_buf[FS_FSZ] XBSS __attribute__((aligned(16)));
+
+static void vmm_zero(void *p, u32 n) { u8 *b = (u8 *)p; for (u32 i = 0; i < n; i++) b[i] = 0; }
+
+static int vmm_hgcm_wait(struct vmm_hgcm_hdr *hdr, u32 sz, u32 type, u32 timeout_ms) {
+    hdr->h.size = sz;
+    hdr->h.version = VMMDEV_REQ_VERSION;
+    hdr->h.req_type = type;
+    hdr->h.rc = 0;
+    hdr->h.reserved1 = 0;
+    hdr->h.f_req = 0;
+    hdr->flags = 0;
+    hdr->result = 0;
+    __asm__ volatile("mfence" : : : "memory");
+    outl(vmm_port, (u32)(uintptr_t)hdr);
+    if (((volatile struct vmm_hdr *)&hdr->h)->rc == VINF_HGCM_ASYNC_EXECUTE) {
+        u32 t0 = now_ms();
+        while (!(((volatile struct vmm_hgcm_hdr *)hdr)->flags & VBOX_HGCM_REQ_DONE)) {
+            if (now_ms() - t0 > timeout_ms) return -1;
+            __asm__ volatile("pause");
+        }
+    }
+    if (((volatile struct vmm_hdr *)&hdr->h)->rc < 0) return -1;
+    if (((volatile struct vmm_hgcm_hdr *)hdr)->result < 0) return -1;
+    return 0;
+}
+
+static void vbox_clip_arm_msg(void) {
+    if (!vmm_port || !vbox_clip_cid || vbox_msg_pending) return;
+    vmm_zero(&vbox_msg_req, sizeof vbox_msg_req);
+    u32 sz = (u32)(sizeof(struct vmm_hgcm_hdr) + 12 + 2 * sizeof(struct vmm_hgcm_parm64));
+    vbox_msg_req.hdr.h.size = sz;
+    vbox_msg_req.hdr.h.version = VMMDEV_REQ_VERSION;
+    vbox_msg_req.hdr.h.req_type = VMMDEV_REQ_HGCM_CALL64;
+    vbox_msg_req.client_id = vbox_clip_cid;
+    vbox_msg_req.fn = VBOX_SHCL_FN_GET_HOST_MSG;
+    vbox_msg_req.cparms = 2;
+    vbox_msg_req.p[0].type = VMMDEV_HGCM_PARM_32BIT;
+    vbox_msg_req.p[1].type = VMMDEV_HGCM_PARM_32BIT;
+    __asm__ volatile("mfence" : : : "memory");
+    outl(vmm_port, (u32)(uintptr_t)&vbox_msg_req);
+    int rc = ((volatile struct vmm_hdr *)&vbox_msg_req.hdr.h)->rc;
+    if (rc == VINF_HGCM_ASYNC_EXECUTE || rc >= 0) vbox_msg_pending = 1;
+}
+
+static int vbox_u16_to_cp866(const u16 *src, int nunits, char *dst, int max) {
+    int o = 0;
+    for (int i = 0; i < nunits && o < max; i++) {
+        u16 u = src[i];
+        if (!u) break;
+        if (u == '\r' && i + 1 < nunits && src[i + 1] == '\n') continue;
+        if (u == '\r') { dst[o++] = '\n'; continue; }
+        if (u < 0x80) dst[o++] = (char)u;
+        else if (u >= 0x0410 && u <= 0x042F) dst[o++] = (char)(0x80 + (u - 0x0410));
+        else if (u >= 0x0430 && u <= 0x043F) dst[o++] = (char)(0xA0 + (u - 0x0430));
+        else if (u >= 0x0440 && u <= 0x044F) dst[o++] = (char)(0xE0 + (u - 0x0440));
+        else if (u == 0x0401) dst[o++] = (char)0xF0;
+        else if (u == 0x0451) dst[o++] = (char)0xF1;
+        else dst[o++] = '?';
+    }
+    return o;
+}
+
+static int vbox_cp866_to_u16(const char *src, int len, u16 *dst, int max_units) {
+    int o = 0;
+    for (int i = 0; i < len && o + 2 < max_units; i++) {
+        u8 c = (u8)src[i];
+        if (c == '\n') {
+            if (i == 0 || src[i - 1] != '\r') dst[o++] = '\r';
+            dst[o++] = '\n';
+        } else if (c < 0x80) dst[o++] = c;
+        else if (c >= 0x80 && c <= 0x9F) dst[o++] = (u16)(0x0410 + (c - 0x80));
+        else if (c >= 0xA0 && c <= 0xAF) dst[o++] = (u16)(0x0430 + (c - 0xA0));
+        else if (c >= 0xE0 && c <= 0xEF) dst[o++] = (u16)(0x0440 + (c - 0xE0));
+        else if (c == 0xF0) dst[o++] = 0x0401;
+        else if (c == 0xF1) dst[o++] = 0x0451;
+        else dst[o++] = '?';
+    }
+    dst[o++] = 0;
+    return o * 2;
+}
+
+static void vbox_host_read(void) {
+    if (!vmm_port || !vbox_clip_cid) return;
+    vmm_zero(&vbox_call_req, sizeof vbox_call_req);
+    vbox_call_req.client_id = vbox_clip_cid;
+    vbox_call_req.fn = VBOX_SHCL_FN_READ_DATA;
+    vbox_call_req.cparms = 3;
+    vbox_call_req.p[0].type = VMMDEV_HGCM_PARM_32BIT;
+    vbox_call_req.p[0].u.u32 = VBOX_SHCL_FMT_UNICODETEXT;
+    vbox_call_req.p[1].type = VMMDEV_HGCM_PARM_LINADDR_OUT;
+    vbox_call_req.p[1].u.ptr.size = sizeof vbox_u16_buf;
+    vbox_call_req.p[1].u.ptr.addr = (u64)(uintptr_t)vbox_u16_buf;
+    vbox_call_req.p[2].type = VMMDEV_HGCM_PARM_32BIT;
+    vbox_call_req.p[2].u.u32 = 0;
+    u32 sz = (u32)(sizeof(struct vmm_hgcm_hdr) + 12 + 3 * sizeof(struct vmm_hgcm_parm64));
+    if (vmm_hgcm_wait(&vbox_call_req.hdr, sz, VMMDEV_REQ_HGCM_CALL64, 60) < 0) return;
+    u32 actual = vbox_call_req.p[2].u.u32;
+    if (actual > sizeof vbox_u16_buf) actual = sizeof vbox_u16_buf;
+    if (actual >= 2) {
+        int n = vbox_u16_to_cp866(vbox_u16_buf, (int)(actual / 2), clip_buf, FS_FSZ - 1);
+        clip_len = n;
+        clip_buf[clip_len] = 0;
+    }
+}
+
+static void vbox_host_write(void) {
+    if (!vmm_port || !vbox_clip_cid) return;
+    int bytes = vbox_cp866_to_u16(clip_buf, clip_len, vbox_u16_buf, FS_FSZ);
+    for (int parms = 2; parms <= 3; parms++) {
+        vmm_zero(&vbox_call_req, sizeof vbox_call_req);
+        vbox_call_req.client_id = vbox_clip_cid;
+        vbox_call_req.fn = VBOX_SHCL_FN_WRITE_DATA;
+        vbox_call_req.cparms = (u32)parms;
+        vbox_call_req.p[0].type = VMMDEV_HGCM_PARM_32BIT;
+        vbox_call_req.p[0].u.u32 = VBOX_SHCL_FMT_UNICODETEXT;
+        vbox_call_req.p[1].type = VMMDEV_HGCM_PARM_LINADDR_IN;
+        vbox_call_req.p[1].u.ptr.size = (u32)bytes;
+        vbox_call_req.p[1].u.ptr.addr = (u64)(uintptr_t)vbox_u16_buf;
+        if (parms == 3) {
+            vbox_call_req.p[2].type = VMMDEV_HGCM_PARM_32BIT;
+            vbox_call_req.p[2].u.u32 = (u32)bytes;
+        }
+        u32 sz = (u32)(sizeof(struct vmm_hgcm_hdr) + 12 + (u32)parms * sizeof(struct vmm_hgcm_parm64));
+        if (vmm_hgcm_wait(&vbox_call_req.hdr, sz, VMMDEV_REQ_HGCM_CALL64, 60) == 0) break;
+    }
+}
+
+static void vbox_clip_poll(void) {
+    static int in_poll;
+    if (in_poll || !vmm_port || !vbox_clip_cid) return;
+    in_poll = 1;
+    for (int it = 0; it < 4 && vbox_msg_pending; it++) {
+        if (!(((volatile struct vmm_hgcm_hdr *)&vbox_msg_req.hdr)->flags & VBOX_HGCM_REQ_DONE)) break;
+        int ok = (((volatile struct vmm_hdr *)&vbox_msg_req.hdr.h)->rc >= 0 &&
+                  ((volatile struct vmm_hgcm_hdr *)&vbox_msg_req.hdr)->result >= 0);
+        u32 msg = vbox_msg_req.p[0].u.u32;
+        u32 fmt = vbox_msg_req.p[1].u.u32;
+        vbox_msg_pending = 0;
+        if (!ok) break;
+        if (msg == VBOX_SHCL_HOST_MSG_QUIT) { vbox_clip_cid = 0; break; }
+        if (msg == VBOX_SHCL_HOST_MSG_FORMATS && (fmt & VBOX_SHCL_FMT_UNICODETEXT)) vbox_host_read();
+        else if (msg == VBOX_SHCL_HOST_MSG_READ && (fmt & VBOX_SHCL_FMT_UNICODETEXT)) vbox_host_write();
+        vbox_clip_arm_msg();
+    }
+    in_poll = 0;
+}
+
+static void vbox_clip_init(void) {
+    vmm_port = 0; vbox_clip_cid = 0; vbox_msg_pending = 0;
+    for (u32 b = 0; b < 32; b++) {
+        if (b > 0 && (pci_read(b, 0, 0, 0) & 0xFFFF) == 0xFFFF) continue;
+        for (u32 d = 0; d < 32; d++) {
+            if ((pci_read(b, d, 0, 0) & 0xFFFF) == 0xFFFF) continue;
+            int nfn = ((pci_read(b, d, 0, 0x0C) >> 16) & 0x80) ? 8 : 1;
+            for (u32 f = 0; f < (u32)nfn; f++) {
+                u32 id = pci_read(b, d, f, 0);
+                if (id == 0xCAFE80EEu) {
+                    pci_write(b, d, f, 4, pci_read(b, d, f, 4) | 7);
+                    u32 bar0 = pci_read(b, d, f, 0x10);
+                    if (bar0 & 1) vmm_port = (u16)(bar0 & ~0x3u);
+                    goto found_vmm;
+                }
+            }
+        }
+    }
+    return;
+found_vmm:
+    if (!vmm_port) return;
+    vmm_zero(&vmm_ginfo, sizeof vmm_ginfo);
+    vmm_ginfo.h.size = sizeof vmm_ginfo;
+    vmm_ginfo.h.version = VMMDEV_REQ_VERSION;
+    vmm_ginfo.h.req_type = VMMDEV_REQ_REPORT_GUESTINFO;
+    vmm_ginfo.iface_ver = 0x00010004u;
+    vmm_ginfo.os_type = 0;
+    __asm__ volatile("mfence" : : : "memory");
+    outl(vmm_port, (u32)(uintptr_t)&vmm_ginfo);
+
+    vmm_zero(&vbox_conn_req, sizeof vbox_conn_req);
+    vbox_conn_req.loc_type = VMMDEV_HGCM_LOC_HOST_EXIST;
+    {
+        const char *sn = "VBoxSharedClipboard";
+        for (int i = 0; sn[i]; i++) vbox_conn_req.name[i] = sn[i];
+    }
+    if (vmm_hgcm_wait(&vbox_conn_req.hdr, sizeof vbox_conn_req, VMMDEV_REQ_HGCM_CONNECT, 100) == 0 && vbox_conn_req.client_id) {
+        vbox_clip_cid = vbox_conn_req.client_id;
+        vbox_clip_arm_msg();
+        vbox_clip_poll();
+        if (clip_len == 0) vbox_host_read();
+    }
+}
+
+static int lua_getclip(char *buf, int max) {
+    vbox_clip_poll();
+    int n = clip_len < max ? clip_len : max;
+    for (int i = 0; i < n; i++) buf[i] = clip_buf[i];
+    if (n < max) buf[n] = 0;
+    return n;
+}
+
+static void lua_setclip(const char *s, int len) {
+    if (len < 0) len = 0;
+    if (len >= FS_FSZ) len = FS_FSZ - 1;
+    for (int i = 0; i < len; i++) clip_buf[i] = s[i];
+    clip_len = len;
+    clip_buf[clip_len] = 0;
+    if (vmm_port && vbox_clip_cid) {
+        vbox_clip_poll();
+        vmm_zero(&vbox_call_req, sizeof vbox_call_req);
+        vbox_call_req.client_id = vbox_clip_cid;
+        vbox_call_req.fn = VBOX_SHCL_FN_FORMATS;
+        vbox_call_req.cparms = 1;
+        vbox_call_req.p[0].type = VMMDEV_HGCM_PARM_32BIT;
+        vbox_call_req.p[0].u.u32 = VBOX_SHCL_FMT_UNICODETEXT;
+        u32 sz = (u32)(sizeof(struct vmm_hgcm_hdr) + 12 + sizeof(struct vmm_hgcm_parm64));
+        vmm_hgcm_wait(&vbox_call_req.hdr, sz, VMMDEV_REQ_HGCM_CALL64, 40);
+        vbox_clip_poll();
+    }
 }
 
 /* ---------- Сетевые команды ---------- */
@@ -1445,13 +1739,14 @@ static int dlg_theme(void) {                    /* выбор темы; -1 ес�
     return res;
 }
 
-/* простой полноэкранный редактор: ESC - сохранить и выйти */
+/* простой полноэкранный редактор: ESC - сохранить и выйти, Ctrl+A/C/X/V - выделение и буфер обмена */
 static void editor(int idx) {
-    static char buf[FS_FSZ];
-    int len = fsn[idx].size, pos, top = 0;
+    static char buf[FS_FSZ] XBSS;
+    int len = fsn[idx].size, pos, top = 0, sel = -1;
     for (int i = 0; i < len; i++) buf[i] = fsdata[idx][i];
     pos = len;
     u8 omui = mouse_ui; mouse_ui = 1;
+    int ocur = fbc_cur;
     color = th->base; cursor_show();
     for (;;) {
         mouse_forget();
@@ -1464,26 +1759,29 @@ static void editor(int idx) {
         if (cyp < top) top = cyp;
         if (cyp > top + 22) top = cyp - 22;
         for (int i = 0; i < W * (H - 1); i++) vga[i] = (u16)((th->file << 8) | ' ');
+        int s0 = (sel >= 0 && sel != pos) ? (sel < pos ? sel : pos) : -1;
+        int s1 = (sel >= 0 && sel != pos) ? (sel > pos ? sel : pos) : -1;
         x = 0; y = 0;
         for (int i = 0; i < len; i++) {
             char c = buf[i];
+            u8 at = (s0 >= 0 && i >= s0 && i < s1) ? th->sel : th->file;
             if (c == '\n') { x = 0; y++; }
             else {
-                if (y - top >= 0 && y - top < H - 1) put_at(x, y - top, c == '\t' ? ' ' : c, th->file);
+                if (y - top >= 0 && y - top < H - 1) put_at(x, y - top, c == '\t' ? ' ' : c, at);
                 if (++x >= W) { x = 0; y++; }
             }
         }
         for (int i = 0; i < W; i++) put_at(i, H - 1, ' ', th->title);
-        put_str_at(1, H - 1, "ESC: save & exit   arrows/Home/End/Del   file:", th->title);
-        put_str_at(49, H - 1, fsn[idx].name, th->title);
-        put_str_at(62, H - 1, kbd_ru ? "RU" : "EN", th->title);
+        put_str_at(1, H - 1, "ESC:save ^A:all ^C:cp ^X:cut ^V:pst", th->title);
+        put_str_at(38, H - 1, fsn[idx].name, th->title);
+        put_str_at(56, H - 1, kbd_ru ? "RU" : "EN", th->title);
         {
             int n = len;
             char dg[5];
             dg[4] = 0;
             for (int k = 3; k >= 0; k--) { dg[k] = '0' + n % 10; n /= 10; }
-            put_str_at(66, H - 1, dg, th->title);
-            put_str_at(70, H - 1, "/2047", th->title);
+            put_str_at(64, H - 1, dg, th->title);
+            put_str_at(68, H - 1, "/8191", th->title);
         }
         cx = cxp; cy = cyp - top; cursor();
         int k;
@@ -1495,6 +1793,7 @@ static void editor(int idx) {
             break;
         }
         if (k == UI_CLICK) {
+            sel = -1;
             if (my < H - 1) {
                 int ty = my + top, best = len, found = 0, x2 = 0, y2 = 0;
                 for (int i = 0; i <= len; i++) {
@@ -1507,7 +1806,44 @@ static void editor(int idx) {
             continue;
         }
         if (k == 27) { fs_write(idx, buf, len, 0); fs_sync(); break; }
-        else if (k == K_LEFT) { if (pos > 0) pos--; }
+        if (ctrl_ && !alt_) {
+            if (kbase == 'a') { sel = 0; pos = len; }
+            else if (kbase == 'c') {
+                if (sel >= 0 && sel != pos) {
+                    int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos;
+                    lua_setclip(buf + a, b - a);
+                }
+            } else if (kbase == 'x') {
+                if (sel >= 0 && sel != pos) {
+                    int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos, d = b - a;
+                    lua_setclip(buf + a, d);
+                    for (int i = b; i < len; i++) buf[i - d] = buf[i];
+                    len -= d; pos = a; sel = -1;
+                }
+            } else if (kbase == 'v') {
+                if (sel >= 0 && sel != pos) {
+                    int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos, d = b - a;
+                    for (int i = b; i < len; i++) buf[i - d] = buf[i];
+                    len -= d; pos = a; sel = -1;
+                }
+                static char pb[FS_FSZ] XBSS;
+                int pn = lua_getclip(pb, FS_FSZ - 1);
+                int ins = FS_FSZ - 1 - len;
+                if (pn < ins) ins = pn;
+                if (ins > 0) {
+                    for (int i = len - 1; i >= pos; i--) buf[i + ins] = buf[i];
+                    for (int i = 0; i < ins; i++) buf[pos + i] = pb[i];
+                    pos += ins; len += ins;
+                }
+            } else if (kbase == 's') {
+                fs_write(idx, buf, len, 0); fs_sync();
+            }
+            continue;
+        }
+        if (k == K_LEFT || k == K_RIGHT || k == K_HOME || k == K_END || k == K_UP || k == K_DOWN) {
+            if (shift) { if (sel < 0) sel = pos; } else sel = -1;
+        }
+        if (k == K_LEFT) { if (pos > 0) pos--; }
         else if (k == K_RIGHT) { if (pos < len) pos++; }
         else if (k == K_HOME) { while (pos > 0 && buf[pos - 1] != '\n') pos--; }
         else if (k == K_END) { while (pos < len && buf[pos] != '\n') pos++; }
@@ -1531,14 +1867,32 @@ static void editor(int idx) {
                 pos = ns + col; if (pos > ne) pos = ne;
             }
         }
-        else if (k == '\b') { if (pos > 0) { for (int i = pos; i < len; i++) buf[i - 1] = buf[i]; pos--; len--; } }
-        else if (k == K_DEL) { if (pos < len) { for (int i = pos + 1; i < len; i++) buf[i - 1] = buf[i]; len--; } }
+        else if (k == '\b') {
+            if (sel >= 0 && sel != pos) {
+                int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos, d = b - a;
+                for (int i = b; i < len; i++) buf[i - d] = buf[i];
+                len -= d; pos = a; sel = -1;
+            } else if (pos > 0) { for (int i = pos; i < len; i++) buf[i - 1] = buf[i]; pos--; len--; }
+        }
+        else if (k == K_DEL) {
+            if (sel >= 0 && sel != pos) {
+                int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos, d = b - a;
+                for (int i = b; i < len; i++) buf[i - d] = buf[i];
+                len -= d; pos = a; sel = -1;
+            } else if (pos < len) { for (int i = pos + 1; i < len; i++) buf[i - 1] = buf[i]; len--; }
+        }
         else if (k == '\n' || k == '\t' || (k >= 32 && k < 127) || (k >= 0x80 && k <= 0xFF)) {
+            if (sel >= 0 && sel != pos) {
+                int a = sel < pos ? sel : pos, b = sel > pos ? sel : pos, d = b - a;
+                for (int i = b; i < len; i++) buf[i - d] = buf[i];
+                len -= d; pos = a; sel = -1;
+            }
             if (len < FS_FSZ - 1) { for (int i = len; i > pos; i--) buf[i] = buf[i - 1]; buf[pos++] = (char)k; len++; }
         }
     }
     mouse_ui = omui; mouse_forget(); ui_drop_events();
     color = th->base; clear();
+    if (!ocur) cursor_hide(); else cursor_show();
 }
 
 /* ---------- Просмотр страниц и браузер ---------- */
@@ -2706,12 +3060,12 @@ static int lua_edit(const char *path) {                 /* встроенный 
     return 1;
 }
 /* os.exec: команда оболочки с захватом вывода; только неинтерактивные встроенные команды */
-static char lua_exec_buf[4096];
+static char lua_exec_buf[4096] XBSS;
 static void run(char *line);
 static int lua_exec(const char *cmdline, char *buf, int max) {
     static const char *const ok[] = { "echo", "time", "date", "uptime", "fastfetch", "free", "ver", "calc", "cowsay", "ls", "cd", "pwd", "mkdir", "touch",
         "cat", "rm", "cp", "mv", "tree", "df", "save", "write", "append", "ifconfig", "dhcp", "ping", "nslookup", "arp", "netdiag", "dns", "lspci",
-        "curl", "stas", "user", "hostname", "lang", "theme", "color", "help", "beep", 0 };
+        "curl", "stas", "user", "hostname", "lang", "theme", "color", "help", "beep", "gfxinfo", 0 };
     char line[160], tmp[160]; int n = 0;
     while (cmdline[n] && n < 159) { line[n] = cmdline[n]; tmp[n] = cmdline[n]; n++; }
     line[n] = tmp[n] = 0;
@@ -2734,6 +3088,13 @@ static int lua_exec(const char *cmdline, char *buf, int max) {
     }
     return -1;
 }
+static int lua_run_tty(const char *cmdline);
+static u8 *lua_vm_save_ptr(int depth) {
+    if (mem_mib() < 16) return 0;
+    if (depth == 1) return (u8 *)0x900000;
+    if (depth == 2) return (u8 *)0xC00000;
+    return 0;
+}
 /* пиксельная графика: gfx.h (поверхности, примитивы), luagfx.h (функции для Lua), fbcon.h (консоль поверх пикселей) */
 #define GX_KBD_PENDING() (inb(0x64) & 1)
 #define GX_MODS() kmods()
@@ -2743,6 +3104,9 @@ static int lua_exec(const char *cmdline, char *buf, int max) {
 #include "gfx.h"
 #define LUA_HEAP_ATTR XBSS
 #define LUA_EXT
+#define LUA_CLIP
+#define LUA_RUN_TTY lua_run_tty
+#define LUA_VM_SAVE_PTR lua_vm_save_ptr
 #include "lua.h"
 #include "luagfx.h"
 #include "fbcon.h"
@@ -2765,6 +3129,50 @@ static void cmd_lua(char *args) {
     else lua_run_src(code, n, "lua");
 }
 #include "stas.h"
+static int lua_run_tty(const char *cmdline) {
+    char line[160], tmp[160]; int n = 0;
+    while (cmdline[n] && n < 159) { line[n] = cmdline[n]; tmp[n] = cmdline[n]; n++; }
+    line[n] = tmp[n] = 0;
+    char *a = tmp, *w = tok(&a);
+    if (!w) return 0;
+    const struct cinfo *c = cmd_find(w);
+    if (c) {
+        if (streq(c->name, "wm") || streq(c->name, "wmboot") || streq(c->name, "textboot") ||
+            streq(c->name, "reboot") || streq(c->name, "halt") || streq(c->name, "crashtest")) return -1;
+    } else {
+        if (streq(w, "cravgwm") || !stas_okname(w) || stas_node(w) < 0) return -1;
+    }
+    int ogx_wm = gx_wm, ocur = fbc_cur;
+    u8 omui = mouse_ui, oc = color;
+    gx_wm = 0;
+    mouse_ui = 0;
+    mouse_forget();
+    ui_drop_events();
+    for (int i = 0; i < 64; i++) key_poll();
+    gx_qh = gx_qt = 0;
+    color = th->base;
+    clear();
+    cursor_show();
+    run(line);
+    mouse_ui = omui;
+    mouse_forget();
+    ui_drop_events();
+    for (int i = 0; i < 64; i++) key_poll();
+    gx_qh = gx_qt = 0;
+    gx_mdx = gx_mdy = gx_wheel = 0;
+    gx_mmoved = 0;
+    gx_mb = gx_pmb = m_buttons;
+    shift = ctrl_ = alt_ = super_ = ext = 0;
+    color = oc;
+    if (!ocur) cursor_hide();
+    gx_wm = ogx_wm;
+    if (gx_ok && gx_wm) {
+        gx_target(0);
+        gx_dx0 = 0; gx_dy0 = 0; gx_dx1 = gx_w; gx_dy1 = gx_h;
+        gx_flip_dirty();
+    }
+    return 1;
+}
 static void bx_para(const char *lab, const char *txt, int w) {
     int ll = slen(lab), inner = w - 4 - ll, first = 1;
     char pad[16], line[80];
@@ -3012,17 +3420,31 @@ static void run(char *line) {
     else { puts("unknown command: "); puts(cmd); puts("  (try 'help')\n"); }
 }
 
+static void ensure_dir(const char *p) {
+    if (fs_resolve(p) < 0) fs_create(p, 1);
+}
+static int write_if_missing(const char *path, const char *txt) {
+    if (fs_resolve(path) >= 0) return 0;
+    write_text(path, txt, 0);
+    return 1;
+}
 static void fs_boot(void) {
     fs_init();
-    int h = fs_create("/home", 1), d = fs_create("/docs", 1);
-    (void)h; (void)d;
+    fs_create("/home", 1);
+    fs_create("/docs", 1);
     fs_create("/etc", 1);
     fs_create("/etc/cravgwm", 1);
+    fs_create("/etc/cravgwm/tpl", 1);
     write_text("/etc/cravgwm/exec-allow", "/apps/cravgterm\n", 0);
+    write_text("/home/notes.txt",
+        "Welcome to CravgOS 0.9.0!\n"
+        "- Open files with cravgedit, draw BMP images with cravgpaint, browse with cravgfm.\n"
+        "- Shortcuts: Ctrl+A (Select All), Ctrl+C (Copy), Ctrl+X (Cut), Ctrl+V (Paste).\n"
+        "- Try terminal commands: help, fastfetch, web, luaide, fm, edit, paint, conf.\n", 0);
     write_text("/readme.txt",
         "Welcome to Cravgos!\nPersistent storage: files and settings are saved automatically.\n"
-        "Try: ls, tree, edit notes.txt, ping 10.0.2.2, fastfetch, lua print(6*7), stas install luaide", 0);
-    write_text("/docs/commands.txt", "ls cd cat edit cp mv rm mkdir | ping nslookup dhcp | snake guess rps | lua stas", 0);
+        "Try: ls, tree, edit /home/notes.txt, ping 10.0.2.2, fastfetch, lua print(6*7), stas install luaide", 0);
+    write_text("/docs/commands.txt", "ls cd cat edit cp mv rm mkdir | ping nslookup dhcp | snake guess rps | lua stas | wmboot wm", 0);
 }
 
 /* ---------- Перехват исключений процессора ---------- */
@@ -3130,57 +3552,125 @@ void kmain(void) {
         fs_boot();
         if (ata_present) disk_save();
     }
-    if (fs_resolve("/etc/cravgwm/exec-allow") < 0) {
-        fs_create("/etc", 1);
-        fs_create("/etc/cravgwm", 1);
-        write_text("/etc/cravgwm/exec-allow", "/apps/cravgterm\n", 0);
-        if (ata_present) disk_save();
-    }
-    if (fs_resolve("/etc/cravgwm/rc.xml") < 0) {
-        fs_create("/etc", 1);
-        fs_create("/etc/cravgwm", 1);
-        write_text("/etc/cravgwm/rc.xml",
-            "<cravgwm>\n"
-            "  <desktops number=\"4\">\n"
-            "    <name>web</name><name>code</name><name>files</name><name>misc</name>\n"
-            "  </desktops>\n"
-            "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
-            "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
-            "</cravgwm>\n", 0);
-        write_text("/etc/cravgwm/menu.xml",
-            "<openbox_menu>\n"
-            "  <menu id=\"root-menu\" label=\"Cravgos\">\n"
-            "    <item label=\"Terminal\"><action name=\"Execute\"><command>cravgterm</command></action></item>\n"
-            "    <item label=\"Files\"><action name=\"Execute\"><command>cravgfm</command></action></item>\n"
-            "    <item label=\"Launcher\"><action name=\"Execute\"><command>cravgrun</command></action></item>\n"
-            "    <separator/>\n"
-            "    <menu id=\"client-list-menu\"/>\n"
-            "    <separator/>\n"
-            "    <item label=\"Exit\"><action name=\"Exit\"/></item>\n"
-            "  </menu>\n"
-            "</openbox_menu>\n", 0);
-        if (ata_present) disk_save();
-    }
-    if (fs_resolve("/etc/cravgwm/cravgbg.xml") < 0) {
-        write_text("/etc/cravgwm/cravgbg.xml",
-            "<cravgbg mode=\"gradient\" from=\"#0b1d3a\" to=\"#3a6ea5\" direction=\"vertical\"/>\n", 0);
-        if (ata_present) disk_save();
-    }
-    if (fs_resolve("/etc/cravgwm/cravgbar.xml") < 0) {
-        write_text("/etc/cravgwm/cravgbar.xml",
-            "<cravgbar position=\"bottom\" height=\"28\" bg=\"#1e1e2e\" fg=\"#dddddd\" highlight=\"#2a5caa\">\n"
-            "  <items>\n"
-            "    <launcher label=\"Term\" command=\"cravgterm\"/>\n"
-            "    <launcher label=\"Files\" command=\"cravgfm\"/>\n"
-            "    <desktops/>\n"
-            "    <taskbar/>\n"
-            "    <clock format=\"%H:%M\"/>\n"
-            "  </items>\n"
-            "</cravgbar>\n", 0);
-        if (ata_present) disk_save();
-    }
+    int need_save = 0;
+    ensure_dir("/home");
+    ensure_dir("/etc");
+    ensure_dir("/etc/cravgwm");
+    ensure_dir("/etc/cravgwm/tpl");
+    need_save |= write_if_missing("/home/notes.txt",
+        "Welcome to CravgOS 0.9.0!\n"
+        "- Open files with cravgedit, draw BMP images with cravgpaint, browse with cravgfm.\n"
+        "- Shortcuts: Ctrl+A (Select All), Ctrl+C (Copy), Ctrl+X (Cut), Ctrl+V (Paste).\n"
+        "- Try terminal commands: help, fastfetch, web, luaide, fm, edit, paint, conf.\n");
+    need_save |= write_if_missing("/etc/cravgwm/exec-allow", "/apps/cravgterm\n");
+    need_save |= write_if_missing("/etc/cravgwm/rc.xml",
+        "<cravgwm>\n"
+        "  <desktops number=\"4\">\n"
+        "    <name>web</name><name>code</name><name>files</name><name>misc</name>\n"
+        "  </desktops>\n"
+        "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+        "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+        "</cravgwm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/menu.xml",
+        "<openbox_menu>\n"
+        "  <menu id=\"root-menu\" label=\"Cravgos\">\n"
+        "    <item label=\"Terminal\"><action name=\"Execute\"><command>cravgterm</command></action></item>\n"
+        "    <item label=\"Files\"><action name=\"Execute\"><command>cravgfm</command></action></item>\n"
+        "    <item label=\"Editor\"><action name=\"Execute\"><command>cravgedit</command></action></item>\n"
+        "    <item label=\"Paint\"><action name=\"Execute\"><command>cravgpaint</command></action></item>\n"
+        "    <item label=\"Launcher\"><action name=\"Execute\"><command>cravgrun</command></action></item>\n"
+        "    <separator/>\n"
+        "    <item label=\"Terminal Config\"><action name=\"Execute\"><command>cravgedit /etc/cravgwm/cravgterm.xml</command></action></item>\n"
+        "    <menu id=\"tpl-menu\" label=\"RC Templates\"/>\n"
+        "    <menu id=\"client-list-menu\"/>\n"
+        "    <separator/>\n"
+        "    <item label=\"Exit\"><action name=\"Exit\"/></item>\n"
+        "  </menu>\n"
+        "</openbox_menu>\n");
+    need_save |= write_if_missing("/etc/cravgwm/cravgbg.xml",
+        "<cravgbg mode=\"gradient\" from=\"#0b1d3a\" to=\"#3a6ea5\" direction=\"vertical\"/>\n");
+    need_save |= write_if_missing("/etc/cravgwm/cravgbar.xml",
+        "<cravgbar position=\"bottom\" height=\"28\" bg=\"#1e1e2e\" fg=\"#dddddd\" highlight=\"#2a5caa\">\n"
+        "  <items>\n"
+        "    <launcher label=\"Term\" command=\"cravgterm\"/>\n"
+        "    <launcher label=\"Files\" command=\"cravgfm\"/>\n"
+        "    <launcher label=\"Edit\" command=\"cravgedit\"/>\n"
+        "    <launcher label=\"Paint\" command=\"cravgpaint\"/>\n"
+        "    <desktops/>\n"
+        "    <taskbar/>\n"
+        "    <clock format=\"%H:%M\"/>\n"
+        "  </items>\n"
+        "</cravgbar>\n");
+    need_save |= write_if_missing("/etc/cravgwm/cravgterm.xml",
+        "<cravgterm width=\"640\" height=\"400\" fg=\"#d0d8e0\" bg=\"#10141c\" scale=\"1\" prompt=\"$ \" scrollback=\"200\">\n"
+        "  <alias name=\"ll\" value=\"ls\"/>\n"
+        "  <alias name=\"cls\" value=\"clear\"/>\n"
+        "  <alias name=\"fm\" value=\"cravgfm\"/>\n"
+        "  <alias name=\"edit\" value=\"cravgedit\"/>\n"
+        "  <alias name=\"paint\" value=\"cravgpaint\"/>\n"
+        "</cravgterm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/cravgfm.xml",
+        "<cravgfm width=\"560\" height=\"360\" start=\"/home\" preview=\"200\">\n"
+        "  <assoc ext=\"txt\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"md\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"log\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"cfg\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"xml\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"lua\" command=\"cravgedit %f\"/>\n"
+        "  <assoc ext=\"bmp\" command=\"cravgpaint %f\"/>\n"
+        "  <bookmark path=\"/home\"/>\n"
+        "  <bookmark path=\"/lua\"/>\n"
+        "  <bookmark path=\"/etc/cravgwm\"/>\n"
+        "  <bookmark path=\"/docs\"/>\n"
+        "</cravgfm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/tpl/default.xml",
+        "<cravgwm>\n"
+        "  <desktops number=\"4\"><name>web</name><name>code</name><name>files</name><name>misc</name></desktops>\n"
+        "  <focus model=\"click\" raise=\"yes\"/><placement policy=\"center\"/>\n"
+        "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+        "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+        "  <theme><title height=\"22\" scale=\"1\" align=\"left\"/><border width=\"2\"/><root color=\"#101820\"/>\n"
+        "    <active title=\"#2a5caa\" title2=\"#1b3f7a\" text=\"#ffffff\" border=\"#2a5caa\"/>\n"
+        "    <inactive title=\"#444444\" title2=\"#333333\" text=\"#cccccc\" border=\"#444444\"/>\n"
+        "  </theme>\n"
+        "</cravgwm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/tpl/dark.xml",
+        "<cravgwm>\n"
+        "  <desktops number=\"4\"><name>1</name><name>2</name><name>3</name><name>4</name></desktops>\n"
+        "  <focus model=\"click\" raise=\"yes\"/><placement policy=\"cascade\"/>\n"
+        "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+        "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+        "  <theme><title height=\"24\" scale=\"1\" align=\"center\"/><border width=\"2\"/><root color=\"#0c0e14\"/>\n"
+        "    <active title=\"#282c38\" title2=\"#1b1e26\" text=\"#e0e6f0\" border=\"#4f6d9a\"/>\n"
+        "    <inactive title=\"#181a20\" title2=\"#14161b\" text=\"#7a8290\" border=\"#282c34\"/>\n"
+        "  </theme>\n"
+        "</cravgwm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/tpl/compact.xml",
+        "<cravgwm>\n"
+        "  <desktops number=\"3\"><name>term</name><name>edit</name><name>misc</name></desktops>\n"
+        "  <focus model=\"click\" raise=\"yes\"/><placement policy=\"cascade\"/>\n"
+        "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+        "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+        "  <theme><title height=\"18\" scale=\"1\" align=\"left\"/><border width=\"1\"/><root color=\"#12161c\"/>\n"
+        "    <active title=\"#1f6f78\" title2=\"#165058\" text=\"#ffffff\" border=\"#1f6f78\"/>\n"
+        "    <inactive title=\"#343840\" title2=\"#2c3038\" text=\"#aaaaaa\" border=\"#343840\"/>\n"
+        "  </theme>\n"
+        "</cravgwm>\n");
+    need_save |= write_if_missing("/etc/cravgwm/tpl/classic.xml",
+        "<cravgwm>\n"
+        "  <desktops number=\"4\"><name>main</name><name>code</name><name>docs</name><name>fun</name></desktops>\n"
+        "  <focus model=\"click\" raise=\"yes\"/><placement policy=\"center\"/>\n"
+        "  <autostart><run>cravgbg</run><run>cravgbar</run></autostart>\n"
+        "  <menu file=\"/etc/cravgwm/menu.xml\"/>\n"
+        "  <theme><title height=\"22\" scale=\"1\" align=\"left\"/><border width=\"2\"/><root color=\"#18120c\"/>\n"
+        "    <active title=\"#8c5219\" title2=\"#63380e\" text=\"#fff4d8\" border=\"#b56d22\"/>\n"
+        "    <inactive title=\"#3b3229\" title2=\"#2d261f\" text=\"#b0a090\" border=\"#3b3229\"/>\n"
+        "  </theme>\n"
+        "</cravgwm>\n");
+    if (need_save && ata_present) disk_save();
     nic_tx = e1000_send; nic_rx = e1000_recv; ms_now = now_ms;
     nic_ok = e1000_init();
+    vbox_clip_init();
     if (nic_ok) { nip = 0x0A00020F; nmask = 0xFFFFFF00u; ngw = 0x0A000202; ndns = 0x0A000203; }
     http_raw = tls_rawbuf; http_rawmax = sizeof tls_rawbuf - 1; http_rand = kernel_rand;
     boot_splash();
